@@ -37,3 +37,28 @@ signature = AzookaBay::Signing.sign(
 
 No dependencies; Crystal stdlib + system OpenSSL (>= 1.1.1). Validated
 against RFC 8032 test vectors (`crystal spec`).
+
+## Client
+
+`AzookaBay::Client` wraps the protocol in typed calls, so a site does not
+reimplement signed transport (and rediscover that the query string is part of the
+signed path, or that nonces must never repeat).
+
+```crystal
+azb = AzookaBay::Client.from_env          # AZB_SITE_ID / AZB_KEY_ID / AZB_PRIVATE_KEY_SEED
+azb.whoami                                 # proves creds, clock and signing end to end
+azb.login_start("tom@example.com", redirect_path: "/midway")
+login = azb.login_verify(token)            # first verify creates the user
+azb.issue(user_id: login.user_id, asset: "bones", amount: 20,
+          idempotency_key: "welcome-#{login.user_id}")
+```
+
+The seed may be raw bytes, 64 hex chars or base64 — a credential file's encoding
+is decided by whatever wrote it, and a silent mismatch would otherwise surface as
+an unexplainable 401 rather than a clear error at construction.
+
+`Client::Error` carries the server's own `status` and `code`. Authentication
+failures stay a single opaque `401 unauthorized` — the client does not guess at
+or embellish them, because distinguishing them would hand an attacker the oracle
+the server deliberately withholds. `#retryable?` marks the one code whose own
+guidance is "retry later".

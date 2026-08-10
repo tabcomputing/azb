@@ -11,6 +11,7 @@
 # Protocol spec: docs/protocol.md. API reference: docs/api.md.
 require "./azb/ed25519"
 require "./azb/signing"
+require "./azb/client"
 
 module Azb
   VERSION = "0.1.0"
