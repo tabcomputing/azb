@@ -1,5 +1,6 @@
 require "./spec_helper"
 require "http/server"
+require "socket"
 
 # The client is exercised against a real HTTP server that VERIFIES the signature
 # with this shard's own verifier — the same check the Azooka Bay server makes.
@@ -162,6 +163,35 @@ describe AzookaBay::Client do
                    idempotency_key: "k2").transaction_id.should eq 43
       client.valuables("u-1").balances["bones"].should eq 25
     end
+  end
+
+  it "makes exactly ONE request per call — a timeout is never a silent nonce replay" do
+    # Crystal's stock HTTP::Client retries once on IO::Error with the SAME
+    # request (same nonce, same signature) — a replay the server rejects
+    # with an opaque 401, possibly after real work was done. This test
+    # counts attempts against a black hole: accept, never answer. It goes
+    # red if a stdlib change resurrects the hidden retry.
+    attempts = Atomic(Int32).new(0)
+    server = TCPServer.new("127.0.0.1", 0)
+    port = server.local_address.port
+    spawn do
+      loop do
+        sock = server.accept? || break
+        attempts.add(1)
+        spawn do
+          sock.gets_to_end rescue nil # swallow the request, answer nothing
+        end
+      end
+    end
+
+    client = AzookaBay::Client.new("pirate-ship", "ps-1", SEED,
+      "http://127.0.0.1:#{port}", read_timeout: 250.milliseconds)
+    ex = expect_raises(AzookaBay::Client::TransportError) { client.whoami }
+    ex.timeout?.should be_true
+
+    sleep 400.milliseconds # would-be retry window
+    attempts.get.should eq 1
+    server.close
   end
 
   it "sends a fresh nonce every call" do

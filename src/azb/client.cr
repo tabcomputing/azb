@@ -5,6 +5,33 @@ require "uri"
 require "./signing"
 
 module AzookaBay
+  # :nodoc:
+  #
+  # HTTP::Client with the stdlib's silent one-retry REMOVED. Crystal's
+  # `exec` rescues IO::Error (including read timeouts) and re-sends the
+  # SAME request — same nonce, same signature. For an AZB1 client that
+  # retry can never help (we open a fresh connection per call, so there is
+  # no stale keep-alive to recover from) and actively harms: the re-send
+  # is a nonce replay, answered with an opaque 401, and for login/start it
+  # can follow an email that was actually sent. One call = one request,
+  # guaranteed; the caller decides about retries, with a fresh signature.
+  #
+  # Overrides the non-block exec path using stdlib-private helpers —
+  # deliberately version-coupled; the attempt-counting spec goes red if a
+  # stdlib change alters this behavior.
+  class OneShotHTTPClient < HTTP::Client
+    def exec(request : HTTP::Request) : HTTP::Client::Response
+      around_exec(request) do
+        implicit_compression = implicit_compression?(request)
+        set_defaults request
+        run_before_request_callbacks(request)
+        response = exec_internal_single(request, implicit_compression: implicit_compression)
+        raise IO::EOFError.new("Unexpected end of http response") unless response
+        handle_response(response)
+      end
+    end
+  end
+
   # A signed client for the Azooka Bay API.
   #
   # Every call except `health?` is AZB1-signed with this site's Ed25519 key. The
@@ -52,6 +79,29 @@ module AzookaBay
 
     class ConfigError < Exception; end
 
+    # The request never completed: nothing was signed away and no response
+    # exists. `timeout?` distinguishes a read timeout (the request MAY have
+    # reached the server and been processed — the response was simply not
+    # seen) from a connection failure (it almost certainly did not).
+    #
+    # Retrying is the CALLER's choice, and this client guarantees a retry
+    # is a fresh request (new nonce, new timestamp, new signature) — never
+    # a byte replay. Retrying mutating calls is safe when you reuse the
+    # same idempotency_key: a processed-but-unseen first attempt replays
+    # its original result. login_start has no idempotency key; a retry may
+    # send a second email and spends a second rate-limit slot.
+    class TransportError < Exception
+      getter timeout : Bool
+
+      def initialize(cause : Exception, @timeout : Bool)
+        super("azooka bay transport: #{cause.message}", cause: cause)
+      end
+
+      def timeout? : Bool
+        @timeout
+      end
+    end
+
     getter site_id : String
     getter key_id : String
     getter base_url : String
@@ -62,7 +112,8 @@ module AzookaBay
     # would surface as an unexplainable 401 rather than a clear error here.
     # Timeouts are deliberate: this client sits on venue hot paths (the arcade
     # spend), where a hung connection must fail fast rather than hang a
-    # visitor's request. Tune per site if needed.
+    # visitor's request. Tune per site if needed. One call is ONE request
+    # (see OneShotHTTPClient), so read_timeout bounds the whole call.
     def initialize(@site_id : String, @key_id : String, seed : String | Bytes,
                    base_url : String = DEFAULT_BASE_URL,
                    @connect_timeout : Time::Span = 5.seconds,
@@ -114,11 +165,15 @@ module AzookaBay
       headers["Content-Type"] = "application/json" if body
 
       uri = URI.parse(@base_url)
-      http = HTTP::Client.new(uri)
+      http = OneShotHTTPClient.new(uri)
       http.connect_timeout = @connect_timeout
       http.read_timeout = @read_timeout
       res = begin
         http.exec(method, path, headers: headers, body: body)
+      rescue ex : IO::TimeoutError
+        raise TransportError.new(ex, timeout: true)
+      rescue ex : IO::Error
+        raise TransportError.new(ex, timeout: false)
       ensure
         http.close
       end

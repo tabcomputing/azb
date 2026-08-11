@@ -38,6 +38,17 @@ signature = AzookaBay::Signing.sign(
 No dependencies; Crystal stdlib + system OpenSSL (>= 1.1.1). Validated
 against RFC 8032 test vectors (`crystal spec`).
 
+## Transport guarantees
+
+One call is **one request** — the client removes Crystal's stdlib
+behavior of silently retrying an `IO::Error` with the same request,
+which would replay the nonce (an opaque 401) after work may already
+have been done. A failed call raises `TransportError` (`timeout?` tells
+you whether the request may have reached the server); retrying is the
+caller's choice, always freshly signed. Retries of mutating calls are
+safe when you reuse the same `idempotency_key`. `read_timeout`
+(default 10s) bounds the whole call.
+
 ## Client
 
 `AzookaBay::Client` wraps the protocol in typed calls, so a site does not
