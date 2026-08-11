@@ -110,6 +110,20 @@ describe AzookaBay::Client do
 
   it "rejects a seed it cannot decode rather than signing with nonsense" do
     expect_raises(AzookaBay::Client::ConfigError) { AzookaBay::Client.new("s", "k", "not-a-key") }
+    # valid base64, wrong length: must be the SAME helpful error, not a crypto error
+    expect_raises(AzookaBay::Client::ConfigError) do
+      AzookaBay::Client.new("s", "k", Base64.strict_encode(Bytes.new(16)))
+    end
+  end
+
+  it "normalizes a trailing slash off base_url so the signed path matches the sent path" do
+    with_bay do |client, bay|
+      slashed = AzookaBay::Client.new("pirate-ship", "ps-1", SEED,
+        "http://127.0.0.1:#{bay.port}/")
+      slashed.whoami["site"].should eq "pirate-ship"
+      bay.verified.should be_true
+      bay.last_path.should eq "/v1/whoami"
+    end
   end
 
   it "preserves the opaque 401 instead of interpreting it" do

@@ -1,6 +1,7 @@
 require "http/client"
 require "json"
 require "base64"
+require "uri"
 require "./signing"
 
 module AzookaBay
@@ -59,8 +60,16 @@ module AzookaBay
     # base64. Accepting all three matters in practice: a credential file's
     # encoding is decided by whatever wrote it, and a silent format mismatch
     # would surface as an unexplainable 401 rather than a clear error here.
+    # Timeouts are deliberate: this client sits on venue hot paths (the arcade
+    # spend), where a hung connection must fail fast rather than hang a
+    # visitor's request. Tune per site if needed.
     def initialize(@site_id : String, @key_id : String, seed : String | Bytes,
-                   @base_url : String = DEFAULT_BASE_URL)
+                   base_url : String = DEFAULT_BASE_URL,
+                   @connect_timeout : Time::Span = 5.seconds,
+                   @read_timeout : Time::Span = 10.seconds)
+      # A trailing slash would make the SENT resource "//v1/..." while
+      # "/v1/..." was signed — an undebuggable opaque 401. Normalize it away.
+      @base_url = base_url.chomp("/")
       @key = Ed25519::SigningKey.new(seed.is_a?(Bytes) ? seed : decode_seed(seed))
     end
 
@@ -104,7 +113,15 @@ module AzookaBay
       }
       headers["Content-Type"] = "application/json" if body
 
-      res = HTTP::Client.exec(method, "#{@base_url}#{path}", headers: headers, body: body)
+      uri = URI.parse(@base_url)
+      http = HTTP::Client.new(uri)
+      http.connect_timeout = @connect_timeout
+      http.read_timeout = @read_timeout
+      res = begin
+        http.exec(method, path, headers: headers, body: body)
+      ensure
+        http.close
+      end
       parsed = begin
         JSON.parse(res.body.presence || "{}")
       rescue JSON::ParseException
@@ -237,8 +254,11 @@ module AzookaBay
 
     private def decode_seed(raw : String) : Bytes
       s = raw.strip
-      return s.hexbytes if s.matches?(/\A[0-9a-fA-F]{64}\z/)
-      Base64.decode(s)
+      decoded = s.matches?(/\A[0-9a-fA-F]{64}\z/) ? s.hexbytes : Base64.decode(s)
+      # Length-check here so wrong-length base64 gets THIS error, not a raw
+      # crypto error from key construction.
+      raise ArgumentError.new("wrong length") unless decoded.size == Ed25519::SEED_SIZE
+      decoded
     rescue
       raise ConfigError.new("private key seed must be 32 raw bytes, 64 hex chars, or base64")
     end
