@@ -15,7 +15,7 @@ the secret is your site's private key, never the protocol.
 ```yaml
 dependencies:
   azb:
-    github: silicon-circus/azb
+    github: tabcomputing/azb
 ```
 
 ## Sign a request
