@@ -21,7 +21,13 @@ lib LibEd25519
   fun pkey_new_raw_private = EVP_PKEY_new_raw_private_key(type : LibC::Int, e : Void*, key : UInt8*, keylen : LibC::SizeT) : Pkey
   fun pkey_new_raw_public = EVP_PKEY_new_raw_public_key(type : LibC::Int, e : Void*, key : UInt8*, keylen : LibC::SizeT) : Pkey
   fun pkey_get_raw_public = EVP_PKEY_get_raw_public_key(pkey : Pkey, pub : UInt8*, len : LibC::SizeT*) : LibC::Int
-  fun pkey_free = EVP_PKEY_free(pkey : Pkey) : Void
+  # EVP_PKEY_free is deliberately NOT declared. Crystal enforces one
+  # signature per C symbol program-wide, and the openssl_ext shard (a
+  # dependency of the common jwt shard — i.e., of exactly the sites most
+  # likely to adopt azb while migrating off JWT auth) binds it with an
+  # incompatible signature. Keys are process-lifetime objects instead:
+  # sites hold one signing key; verifiers cache per public key. See the
+  # class docs.
   fun digest_sign_init = EVP_DigestSignInit(ctx : LibCrypto::EVP_MD_CTX, pctx : Void*, type : Void*, e : Void*, pkey : Pkey) : LibC::Int
   fun digest_sign = EVP_DigestSign(ctx : LibCrypto::EVP_MD_CTX, sig : UInt8*, siglen : LibC::SizeT*, tbs : UInt8*, tbslen : LibC::SizeT) : LibC::Int
   fun digest_verify_init = EVP_DigestVerifyInit(ctx : LibCrypto::EVP_MD_CTX, pctx : Void*, type : Void*, e : Void*, pkey : Pkey) : LibC::Int
@@ -38,6 +44,10 @@ module AzookaBay
 
     # Holds a private key. Lives on the SITE side: Azooka Bay itself never
     # stores or receives one — it verifies with public keys only.
+    #
+    # LIFETIME: construct once and keep it — keys are process-lifetime
+    # objects (the underlying EVP_PKEY is never freed; see the note on the
+    # lib binding). A site holds exactly one, so this costs nothing.
     class SigningKey
       @pkey : LibEd25519::Pkey
 
@@ -72,13 +82,15 @@ module AzookaBay
         end
       end
 
-      def finalize
-        LibEd25519.pkey_free(@pkey) unless @pkey.null?
-      end
     end
 
     # Holds a public key. This is all Azooka Bay ever stores per site key:
     # a database leak yields nothing capable of producing a valid request.
+    #
+    # LIFETIME: construct once per distinct public key and reuse (cache by
+    # key bytes if verifying many requests) — keys are process-lifetime
+    # objects and constructing one per operation accumulates native
+    # allocations.
     class VerifyKey
       @pkey : LibEd25519::Pkey
 
@@ -103,9 +115,6 @@ module AzookaBay
         end
       end
 
-      def finalize
-        LibEd25519.pkey_free(@pkey) unless @pkey.null?
-      end
     end
   end
 end

@@ -36,7 +36,10 @@ signature = AzookaBay::Signing.sign(
 - [docs/api.md](docs/api.md) — endpoint reference
 
 No dependencies; Crystal stdlib + system OpenSSL (>= 1.1.1). Validated
-against RFC 8032 test vectors (`crystal spec`).
+against RFC 8032 test vectors (`crystal spec`). Links cleanly alongside
+`openssl_ext`/`jwt` (azb declares no `EVP_PKEY_free`; keys are
+process-lifetime objects — construct once, reuse; verifiers should cache
+per public key).
 
 ## Transport guarantees
 
