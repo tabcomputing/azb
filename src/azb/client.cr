@@ -294,6 +294,18 @@ module AzookaBay
                 r["replay"]?.try(&.as_bool?) || false)
     end
 
+    # Just the balances, through this site's realm wall — the hot-path
+    # display read (arcade cabinet wallet). No flows/collectibles/hold, so
+    # it stays flat regardless of ledger history. For the coin drop itself
+    # use `spend` (attempting is the check, and its response carries the new
+    # balance); this is only for painting a number on a screen.
+    def balances(user_id : String) : Hash(String, Int64)
+      r = get("/v1/balance?user_id=#{URI.encode_www_form(user_id)}")
+      out = {} of String => Int64
+      r["balances"].as_h.each { |k, v| out[k] = v.as_i64 }
+      out
+    end
+
     # Everything the user owns, through this site's realm wall.
     def valuables(user_id : String) : Valuables
       r = get("/v1/valuables?user_id=#{URI.encode_www_form(user_id)}")

@@ -62,6 +62,7 @@ private def with_bay(&block : AzookaBay::Client, FakeBay -> Nil)
     when "/v1/login/verify" then {200, %({"user_id":"u-1","email":"tom@example.com","redirect_path":"/midway"})}
     when "/v1/issue"        then {200, %({"transaction_id":42,"balance":20,"replay":false})}
     when "/v1/spend"        then {200, %({"transaction_id":43,"balance":19,"replay":false})}
+    when .starts_with?("/v1/balance") then {200, %({"user_id":"u-1","realm":"silicon-circus","balances":{"bones":25,"emeralds":50}})}
     when .starts_with?("/v1/valuables")
       if path.includes?("held")
         {200, %({"user_id":"u-1","realm":"silicon-circus","balances":{"bones":25},"collectibles":[],"hold":{"message":"Account needs attention.","url":"https://x/billing"}})}
@@ -145,6 +146,14 @@ describe AzookaBay::Client do
     with_bay do |client, _|
       (expect_raises(AzookaBay::Client::Error) { client.get("/v1/refused") }).retryable?.should be_true
       (expect_raises(AzookaBay::Client::Error) { client.get("/v1/nope") }).retryable?.should be_false
+    end
+  end
+
+  it "reads hot-path balances without flows" do
+    with_bay do |client, _|
+      b = client.balances("u-1")
+      b["bones"].should eq 25
+      b["emeralds"].should eq 50
     end
   end
 

@@ -1,5 +1,5 @@
 name: azb
-version: 0.2.3
+version: 0.2.4
 
 description: |
   Client library for the Azooka Bay AZB1 signed-request protocol:
