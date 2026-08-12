@@ -62,7 +62,12 @@ private def with_bay(&block : AzookaBay::Client, FakeBay -> Nil)
     when "/v1/login/verify" then {200, %({"user_id":"u-1","email":"tom@example.com","redirect_path":"/midway"})}
     when "/v1/issue"        then {200, %({"transaction_id":42,"balance":20,"replay":false})}
     when "/v1/spend"        then {200, %({"transaction_id":43,"balance":19,"replay":false})}
-    when .starts_with?("/v1/valuables") then {200, %({"user_id":"u-1","realm":"silicon-circus","balances":{"bones":25},"collectibles":[]})}
+    when .starts_with?("/v1/valuables")
+      if path.includes?("held")
+        {200, %({"user_id":"u-1","realm":"silicon-circus","balances":{"bones":25},"collectibles":[],"hold":{"message":"Account needs attention.","url":"https://x/billing"}})}
+      else
+        {200, %({"user_id":"u-1","realm":"silicon-circus","balances":{"bones":25},"collectibles":[],"hold":null})}
+      end
     when "/v1/nope"         then {401, %({"error":"unauthorized"})}
     when "/v1/refused"      then {502, %({"error":"email_failed"})}
     when "/v1/garbage"      then {500, "<html>gateway</html>"}
@@ -141,6 +146,29 @@ describe AzookaBay::Client do
       (expect_raises(AzookaBay::Client::Error) { client.get("/v1/refused") }).retryable?.should be_true
       (expect_raises(AzookaBay::Client::Error) { client.get("/v1/nope") }).retryable?.should be_false
     end
+  end
+
+  it "surfaces the account hold from valuables, active as held? false" do
+    with_bay do |client, _|
+      active = client.valuables("u-1")
+      active.held?.should be_false            # explicit null collapses to nil
+      active.hold.should be_nil
+
+      held = client.valuables("held-user")
+      held.held?.should be_true
+      held.hold.not_nil!["message"].should eq "Account needs attention."
+      held.hold.not_nil!["url"].should eq "https://x/billing"
+    end
+  end
+
+  it "treats a hold-less response (older server) as active" do
+    key = AzookaBay::Ed25519::SigningKey.new(SEED.hexbytes)
+    bay = FakeBay.new(AzookaBay::Ed25519::VerifyKey.new(key.public_key)) do |_|
+      {200, %({"user_id":"u-1","realm":"r","balances":{},"collectibles":[]})} # no hold key at all
+    end
+    client = AzookaBay::Client.new("s", "k", SEED, "http://127.0.0.1:#{bay.port}")
+    client.valuables("u-1").held?.should be_false
+    bay.close
   end
 
   it "reports a non-JSON response as such rather than raising a parse error" do

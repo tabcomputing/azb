@@ -204,8 +204,20 @@ module AzookaBay
     record Transaction, transaction_id : Int64, balance : Int64, replay : Bool
     record Reversal, transaction_id : Int64, reversed_id : Int64, replay : Bool
     record Award, award_id : Int64, collectible : String, copy_no : Int32, replay : Bool
+    # `hold` is the account-inactive signal (server v0.4.1+): nil when the
+    # user is active (also nil against older servers that never send it, and
+    # nil is normalized from an explicit JSON null too), otherwise an opaque
+    # {message?, url?}. Kept as raw JSON::Any on purpose — the client does
+    # not model or interpret it, preserving the property that a site learns
+    # WHETHER a user is held, never WHY. Render message/url verbatim; and if
+    # you poll this to re-validate a session, fail OPEN when unreachable.
     record Valuables, user_id : String, realm : String,
-      balances : Hash(String, Int64), collectibles : Array(JSON::Any)
+      balances : Hash(String, Int64), collectibles : Array(JSON::Any),
+      hold : JSON::Any? = nil do
+      def held? : Bool
+        !hold.nil?
+      end
+    end
 
     # Unsigned liveness probe — the one call needing no credentials.
     def health? : Bool
@@ -287,8 +299,11 @@ module AzookaBay
       r = get("/v1/valuables?user_id=#{URI.encode_www_form(user_id)}")
       balances = {} of String => Int64
       r["balances"].as_h.each { |k, v| balances[k] = v.as_i64 }
+      # Collapse both absent and explicit-null to nil, so `held?` is a clean
+      # active/inactive test regardless of server version.
+      hold = r["hold"]?.try { |h| h.raw.nil? ? nil : h }
       Valuables.new(r["user_id"].as_s, r["realm"].as_s, balances,
-                    r["collectibles"]?.try(&.as_a) || [] of JSON::Any)
+                    r["collectibles"]?.try(&.as_a) || [] of JSON::Any, hold)
     end
 
     # Realm-scoped shared metadata — what every venue in the realm agrees on
