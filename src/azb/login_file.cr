@@ -75,22 +75,30 @@ module AzookaBay
       getter body_file : String? = nil
     end
 
-    def self.load(path : String) : LoginFile
+    # confine: the files it names must lie inside the YAML's own directory
+    # (no absolute paths, nothing resolving outside it, symlinks included).
+    # For a reader that isn't the file's author, such as an operator
+    # applying a product's file: the file then can't make it read anything
+    # else of theirs.
+    def self.load(path : String, confine : Bool = false) : LoginFile
       doc = begin
         text = File.read(path)
+        if YAML.parse_all(text).size > 1
+          raise Error.new("#{path}: one YAML document only")
+        end
         unique_keys!(YAML::Nodes.parse(text), path) # YAML lets a repeated key silently win
         Doc.from_yaml(text)
       rescue ex : YAML::ParseException
         raise Error.new("#{path}: #{ex.message}")
-      rescue ex : File::Error
+      rescue ex : File::Error | IO::Error
         raise Error.new("#{path}: #{ex.message}")
       end
       dir = File.dirname(path)
       code = doc.code
-      vocab = code.try { |c| vocab_of(c, dir, path) }
+      vocab = code.try { |c| vocab_of(c, dir, path, confine) }
       new(doc.method, code.try(&.style), code.try(&.length), vocab, code.try(&.separator), doc.label,
-        doc.email.try(&.subject), doc.email.try { |e| body_of(e, "email", dir, path) },
-        doc.fallback_email.try(&.subject), doc.fallback_email.try { |e| body_of(e, "fallback_email", dir, path) })
+        doc.email.try(&.subject), doc.email.try { |e| body_of(e, "email", dir, path, confine) },
+        doc.fallback_email.try(&.subject), doc.fallback_email.try { |e| body_of(e, "fallback_email", dir, path, confine) })
     end
 
     private def self.unique_keys!(node : YAML::Nodes::Node, path : String, at : String = "") : Nil
@@ -108,27 +116,37 @@ module AzookaBay
       end
     end
 
-    private def self.vocab_of(c : CodeDoc, dir : String, path : String) : Array(String)?
+    private def self.vocab_of(c : CodeDoc, dir : String, path : String, confine : Bool) : Array(String)?
       raise Error.new("#{path}: code has both vocab and vocab_file; use one") if c.vocab && c.vocab_file
       if file = c.vocab_file
-        read(dir, file, "vocab_file", path).lines.map(&.strip).reject { |l| l.empty? || l.starts_with?('#') }
+        read(dir, file, "vocab_file", path, confine).lines.map(&.strip).reject { |l| l.empty? || l.starts_with?('#') }
       else
         c.vocab
       end
     end
 
-    private def self.body_of(e : EmailDoc, key : String, dir : String, path : String) : String?
+    private def self.body_of(e : EmailDoc, key : String, dir : String, path : String, confine : Bool) : String?
       raise Error.new("#{path}: #{key} has both body and body_file; use one") if e.body && e.body_file
       if file = e.body_file
-        read(dir, file, "#{key}.body_file", path)
+        read(dir, file, "#{key}.body_file", path, confine)
       else
         e.body
       end
     end
 
-    private def self.read(dir : String, file : String, key : String, path : String) : String
-      File.read(File.expand_path(file, dir))
-    rescue ex : File::Error
+    private def self.read(dir : String, file : String, key : String, path : String, confine : Bool) : String
+      target = File.expand_path(file, dir)
+      if confine
+        raise Error.new("#{path}: #{key} '#{file}' must be a relative path") if Path.new(file).absolute?
+        home = File.realpath(dir)
+        real = File.realpath(target)
+        unless real.starts_with?(home + File::SEPARATOR)
+          raise Error.new("#{path}: #{key} '#{file}' lies outside #{dir}")
+        end
+        target = real
+      end
+      File.read(target)
+    rescue ex : File::Error | IO::Error
       raise Error.new("#{path}: cannot read #{key} '#{file}': #{ex.message}")
     end
   end

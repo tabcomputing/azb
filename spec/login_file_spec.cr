@@ -39,6 +39,23 @@ describe AzookaBay::LoginFile do
     end
   end
 
+  it "can confine the files it reads to the YAML's own directory" do
+    in_dir do |dir|
+      Dir.mkdir(File.join(dir, "azb"))
+      File.write(File.join(dir, "secret.env"), "DATABASE_URL=postgres://user:pw@host/db\n")
+      File.write(File.join(dir, "azb", "body.txt"), "Words: {code}")
+      File.symlink(File.join(dir, "secret.env"), File.join(dir, "azb", "link.txt"))
+      path = File.join(dir, "azb", "login.yml")
+      File.write(path, "method: code\nemail: { body_file: body.txt }\n")
+      AzookaBay::LoginFile.load(path, confine: true).email_body.should eq "Words: {code}"
+      { {"../secret.env", /lies outside/}, {"link.txt", /lies outside/}, {File.join(dir, "secret.env"), /must be a relative path/} }.each do |file, why|
+        File.write(path, "method: code\nemail: { body_file: #{file.inspect} }\n")
+        expect_raises(AzookaBay::LoginFile::Error, why) { AzookaBay::LoginFile.load(path, confine: true) }
+        AzookaBay::LoginFile.load(path).email_body.not_nil!.should contain "DATABASE_URL" # unconfined: the author's own choice
+      end
+    end
+  end
+
   it "needs only a method for plain links" do
     in_dir do |dir|
       File.write(File.join(dir, "login.yml"), "method: link\n")
@@ -66,6 +83,12 @@ describe AzookaBay::LoginFile do
       expect_raises(AzookaBay::LoginFile::Error, /cannot read fallback_email.body_file 'missing.txt'/) { AzookaBay::LoginFile.load(path) }
 
       expect_raises(AzookaBay::LoginFile::Error, /nope.yml/) { AzookaBay::LoginFile.load(File.join(dir, "nope.yml")) }
+
+      File.write(path, "method: code\n---\nmethod: link\n")
+      expect_raises(AzookaBay::LoginFile::Error, /one YAML document only/) { AzookaBay::LoginFile.load(path) }
+      Dir.mkdir(File.join(dir, "adir"))
+      File.write(path, "method: code\nemail: { body_file: adir }\n")
+      expect_raises(AzookaBay::LoginFile::Error, /cannot read email.body_file 'adir'/) { AzookaBay::LoginFile.load(path) }
 
       File.write(path, "method: code\nlabel: one\nlabel: two\n")
       expect_raises(AzookaBay::LoginFile::Error, /duplicate key "label"/) { AzookaBay::LoginFile.load(path) }

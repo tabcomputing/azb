@@ -93,7 +93,9 @@ azb.set_login_file("deploy/azb/login.yml")    # on startup or deploy
 ```
 
 `vocab:` and `body:` may be inline instead (not both). The file is strict: an
-unknown key is an error. The Azooka Bay operator can apply the same file with
+unknown or repeated key, or a second YAML document, is an error. Pass
+`LoginFile.load(path, confine: true)` when the reader isn't the file's author:
+it then reads only files inside the YAML's own directory. The Azooka Bay operator can apply the same file with
 `azookabay-enroll login --site <id> --file deploy/azb/login.yml`.
 
 The seed may be raw bytes, 64 hex chars or base64 — a credential file's encoding
