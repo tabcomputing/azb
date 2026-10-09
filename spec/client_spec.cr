@@ -71,6 +71,8 @@ private def with_bay(&block : AzookaBay::Client, FakeBay -> Nil)
       else
         {200, %({"user_id":"u-1","realm":"silicon-circus","balances":{"bones":25},"collectibles":[],"hold":null})}
       end
+    when "/v1/site/login"   then {200, %({"changed":true})}
+    when "/v1/bad-settings" then {400, %({"error":"invalid_login_settings","message":"digits codes must be 6-10 long"})}
     when "/v1/nope"         then {401, %({"error":"unauthorized"})}
     when "/v1/refused"      then {502, %({"error":"email_failed"})}
     when "/v1/garbage"      then {500, "<html>gateway</html>"}
@@ -187,6 +189,28 @@ describe AzookaBay::Client do
       ex = expect_raises(AzookaBay::Client::Error) { client.get("/v1/garbage") }
       ex.code.should eq "bad_response"
       ex.status.should eq 500
+    end
+  end
+
+  it "sets the site's login look as one signed PUT, sending only what was given" do
+    with_bay do |client, bay|
+      client.set_login("code", code_style: "vocab", code_length: 4, vocab: %w(ka zo mi),
+        label: "Magic Word", email_body: "Words: {code}").should be_true
+      bay.verified.should be_true
+      bay.last_method.should eq "PUT"
+      bay.last_path.should eq "/v1/site/login"
+      sent = JSON.parse(bay.last_body.not_nil!).as_h
+      sent.keys.sort.should eq %w(code_length code_style email_body label method vocab)
+      sent["vocab"].as_a.map(&.as_s).should eq %w(ka zo mi)
+      sent["code_length"].as_i.should eq 4
+    end
+  end
+
+  it "carries the server's reason on errors that have one" do
+    with_bay do |client, _|
+      ex = expect_raises(AzookaBay::Client::Error) { client.put("/v1/bad-settings", {"method" => "code"}) }
+      ex.code.should eq "invalid_login_settings"
+      ex.message.not_nil!.should contain "digits codes must be 6-10 long"
     end
   end
 

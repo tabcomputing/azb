@@ -44,18 +44,24 @@ site's own standing, so a deployment's `/health` can report what is
 only its own grants, never another's.
 
 → `200 {"site":"pirate-ship","key":"pirate-ship-20260726-b0c3",
-        "realm":"silicon-circus","capabilities":{"circus_token":["issue","spend"]}}`
+        "realm":"silicon-circus","capabilities":{"sct":["issue","spend"]}}`
 
 ## POST /v1/login/start
 
 Email the user a way in, branded as the calling site. What the email
-carries depends on the site's **login method** (set by the operator,
+carries depends on the site's **login method** (set by the site itself,
+[`PUT /v1/site/login`](#put-v1sitelogin), or by the operator,
 `azookabay-enroll login`):
 
 - `link` (the default): a magic link;
 - `code`: a typed code, which the user enters on the page that asked (see
   [Typed login codes](#typed-login-codes-the-magic-word));
 - `both`: the code and a link; using either kills the other.
+
+After 3 wrong codes for an address at a code site within 24 hours, that
+address gets **a link instead** at that site until the failures age out
+(see [the fallback](#the-fallback-links-after-3-wrong-codes)). So every
+login-capable site needs a link landing page, code-only sites included.
 
 ```json
 {"email": "tom@example.com", "redirect_path": "/midway", "request_ip": "203.0.113.9"}
@@ -73,6 +79,7 @@ silently). No enumeration oracle. The user record is *not* created here.
 | `bad_redirect_path` | 400 | must start with `/`, no whitespace, and not `//`/`/\\` (protocol-relative open-redirect guard) |
 | `login_not_configured` | 500 | a link-capable site has no `link_base_url`, a code-capable site has no code style, or no From resolves (site override and realm default both empty) |
 | `email_failed` | 502 | mail provider refused; retry later |
+| `login_codes_unavailable` | 503 | the site uses typed codes and the server has no `AZB_LOGIN_CODE_KEY` |
 
 The emailed link is `<site.link_base_url>?token=<token>`, valid 15
 minutes, bound to the requesting site. Only the token's SHA-256 is
@@ -108,16 +115,18 @@ session; Azooka Bay plays no further part in the session.
 | Error | Status | Meaning |
 |---|---|---|
 | `missing_params` | 400 | neither `token` nor both `email` and `code` |
-| `invalid_token` | 401 | unknown, expired, over the site's redemption ceiling, or minted for another site — deliberately indistinguishable |
-| `invalid_code` | 401 | wrong, used, expired, killed after 5 wrong tries, over the address's daily failure cap, no login pending, or another site's — deliberately indistinguishable |
+| `invalid_token` | 401 | unknown, expired, over the site's redemption ceiling, never mailed as a link, or minted for another site — deliberately indistinguishable |
+| `invalid_code` | 401 | wrong, used, expired, the address has had 3 wrong codes at this site in 24 hours, no login pending, mailed under a replaced server key, or another site's — deliberately indistinguishable |
 | `user_inactive` | 403 | account suspended or closed, network-wide or in this site's realm |
+| `login_codes_unavailable` | 503 | a typed code, and the server has no `AZB_LOGIN_CODE_KEY` |
 
 ### Typed login codes (the Magic Word)
 
 A magic link signs in only the browser that opens it. In practice that
 means a stray new tab, the wrong browser when a phone's mail app opens it,
 and a target for corporate mail scanners. A **typed code** works on the
-page that asked, on any device. A code-only site sends no link at all.
+page that asked, on any device. A code-only site sends no link, except
+as the fallback below.
 
 - **Azooka Bay generates every code**; the site chooses its look:
   - digits (6–10): `482913`. Give your input field
@@ -126,15 +135,21 @@ page that asked, on any device. A code-only site sends no link at all.
   - the site's own **vocabulary** (syllables or words), N picked at random
     and joined by a separator: `ali-ka-thul-zam-vex`. The flavour is the
     site's; the strength is enforced by AB (at least a million possible
-    codes).
+    codes). The vocabulary must be prefix-free (no entry may begin
+    another, as `in` begins `into`), since codes are compared without
+    their separators.
 - **Typing is forgiving:** case, spaces, hyphens and punctuation are
   ignored.
 - **Guarded:**
   - one use, for the site that asked, within the login's 15 minutes;
-  - 5 wrong tries kills that login's code, and a daily cap on failures
-    per address and site bounds long-run guessing;
-  - every failure is the same `invalid_code`;
-  - stored only as a bcrypt hash.
+  - at most 3 wrong guesses per address and site in 24 hours: then codes
+    are refused and links take over (below). Guesses for one address and
+    site are taken one at a time, so parallel requests can't exceed the
+    cap. A wrong guess counts once for each code still live, so a user who
+    asked for three emails can fall back after one wrong guess;
+  - every failure is the same `invalid_code`, after the same work;
+  - stored only as an HMAC under a server key the database never holds,
+    so a leaked database row can't be brute-forced.
 - **The email** shows the code in a large block that a single tap selects
   where the mail client allows it (Apple Mail, iOS). A real copy button is
   impossible because mail clients strip script. The subject and body can
@@ -145,12 +160,89 @@ page that asked, on any device. A code-only site sends no link at all.
   links on a user gesture or in JavaScript, or a scanner's prefetch will
   kill the user's code.
 
+### The fallback: links after 3 wrong codes
+
+Three wrong codes for one address at a site within 24 hours switch that
+address to **links** at that site until those failures are 24 hours old.
+The site changes nothing: its "send me a new code" button calls
+`/v1/login/start` as usual (still `202 {"ok":true}`), and the email now
+carries a link instead of a code. Redeem it like any magic link.
+
+- **Why:** guessing stays capped at 3 tries a day per address and site,
+  yet nobody can lock a player out by guessing wrong on purpose. A link
+  can't be guessed; the worst an attacker can do is push a player onto
+  links for a day.
+- **Your landing page must redeem on a user gesture or in JavaScript,
+  never on the bare GET.** Mail scanners (Safe Links, Mimecast,
+  Proofpoint) open links before the human does, and they don't run
+  script. A landing page that redeems on GET lets the scanner spend every
+  fallback link, so an attacker who forces the fallback would lock out a
+  player behind such a scanner after all.
+- **The email** can be the site's own (`login --fallback-subject`,
+  `--fallback-body-file`; placeholders `{site}` `{label}` `{link}`
+  `{minutes}`, no `{code}`). On a vocabulary site, the link shows as a
+  fresh word from the vocabulary, underlined, with no URL: touched, not
+  typed (typing it does nothing). A digit site shows a "Log in" button.
+  The plain-text part of the email always shows the full URL.
+- **The stray tab:** the link opens a new tab. Your landing page and the
+  page that asked are the same site, so the landing page can tell the
+  waiting tab "logged in" (a `BroadcastChannel`, or a `storage` event),
+  and say "you can close this tab". That works whenever the link opens in
+  the same browser.
+
+## PUT /v1/site/login
+
+Set the calling site's **own login presentation** (server v0.8.0+): how
+its players sign in and how its login emails read. This is the product's
+design, so the product keeps it in its own repo and pushes it, typically
+on every deploy (azb: `client.set_login(...)`). The operator can set the
+same with `azookabay-enroll login`.
+
+```json
+{"method": "code",
+ "code_style": "vocab", "code_length": 4, "separator": "-",
+ "vocab": ["ka", "zo", "mi", "thul", "vex", "..."],
+ "label": "Magic Word",
+ "email_subject": "The scroll stirs for {site}",
+ "email_body": "The ink resolves into words:\n\n{code}\n\nSpeak them at the gate within {minutes} minutes.",
+ "fallback_subject": "The words fade",
+ "fallback_body": "The words would not take. Touch them instead: {link}"}
+```
+
+| Field | |
+|---|---|
+| `method` | `link`, `code` or `both` (required) |
+| `code_style`, `code_length` | `digits` with 6–10, or `vocab` with 2–12 entries per code (code methods only) |
+| `vocab`, `separator` | the vocabulary (1–16 letters a-z each, prefix-free, at most 4096) and `-`, ` ` or `·` |
+| `label` | what the email calls the code, 1–40 characters |
+| `email_subject`, `email_body` | templates (see [Typed login codes](#typed-login-codes-the-magic-word)) |
+| `fallback_subject`, `fallback_body` | the link-instead email's templates (code methods only) |
+
+→ `200 {"changed": true}`, or `{"changed": false}` when it was already
+so. **Whole-set:** an omitted field returns to its default (AB's default
+email copy, label "code"), so always send the full presentation.
+
+- Validated exactly as the operator's command is: at least a million
+  distinct codes, a prefix-free vocabulary, templates that carry what the
+  method needs. AB always adds its own safety lines to the email.
+- A real change is audited (`site_login`, with the key that made it); an
+  unchanged push writes nothing.
+- **Not settable here, by design:** the landing URL (`link_base_url`) and
+  the From and reply-to addresses. A stolen site key that could change
+  them could point login links at another server, or send mail as your
+  verified domains; they stay with the operator.
+
+| Error | Status | Meaning |
+|---|---|---|
+| `invalid_login_settings` | 400 | refused, with `message` saying why (e.g. `digits codes must be 6-10 long`) |
+| `bad_json` | 400 | not JSON, or a field that isn't in the table above (e.g. `link_base_url`) |
+
 ## POST /v1/issue
 
 Mint asset to a user. Requires `may_issue` on the asset.
 
 ```json
-{"user_id": "<uuid>", "asset": "circus_token", "amount": 20,
+{"user_id": "<uuid>", "asset": "sct", "amount": 20,
  "idempotency_key": "stripe_cs_123", "kind": "purchase",
  "description": "$5.00 -> 20 circus tokens", "metadata": {"stripe_session": "cs_123"}}
 ```
@@ -174,7 +266,7 @@ account for the asset on first grant.
 One-call debit — the arcade path. Requires `may_spend`.
 
 ```json
-{"user_id": "<uuid>", "asset": "circus_token", "amount": 1,
+{"user_id": "<uuid>", "asset": "sct", "amount": 1,
  "idempotency_key": "play_9f3a", "description": "arcade play"}
 ```
 
@@ -219,7 +311,7 @@ realm, **balances only**. No `flows` aggregate and no `hold`, so it is
 flat regardless of ledger history: a handful of indexed rows. This is the
 arcade cabinet wallet.
 
-→ `200 {"user_id":"<uuid>","realm":"silicon-circus","balances":{"circus_token":22}}`
+→ `200 {"user_id":"<uuid>","realm":"silicon-circus","balances":{"sct":22}}`
 
 For the coin drop itself use **`/v1/spend`** — attempting the spend IS
 the balance check (race-free), and its response already carries the new
@@ -246,8 +338,8 @@ discount ladders are venue policy computed from
 ```json
 {"user_id": "<uuid>", "realm": "silicon-circus",
  "hold": null,
- "balances": {"circus_token": 25},
- "flows": {"circus_token": {"purchase": 20, "grant": 5, "spend": -1, "reversal": 1}}}
+ "balances": {"sct": 25},
+ "flows": {"sct": {"purchase": 20, "grant": 5, "spend": -1, "reversal": 1}}}
 ```
 
 | Error | Status |
@@ -336,7 +428,7 @@ covers everything since the site was enrolled.
 
 → `200`
 ```json
-{"site": "guest-services", "as_of": "2026-09-29T23:10:00Z",
+{"site": "silicon-circus-web", "as_of": "2026-09-29T23:10:00Z",
  "windows": {
    "15m": {"users_logged_in": 4, "new_users": 1, "login_emails_sent": 5,
            "login_emails_failed": 0, "login_links_rejected": 1, "users_transacting": 3},

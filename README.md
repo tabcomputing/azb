@@ -67,14 +67,22 @@ login = azb.login_verify_code("tom@example.com", typed)  # or the typed code ("M
 azb.user(login.user_id).active             # standing in this realm (server v0.6.0+), for session re-checks
 azb.issue(user_id: login.user_id, asset: "bones", amount: 20,
           idempotency_key: "welcome-#{login.user_id}")
+
+# the site's own login look (server v0.8.0+): push it on every deploy;
+# whole-set and idempotent, returns whether anything changed
+azb.set_login("code", code_style: "vocab", code_length: 4,
+              vocab: File.read_lines("data/magic_words.txt"), label: "Magic Word",
+              email_subject: "The scroll stirs for {site}",
+              email_body: File.read("data/login_email.txt"))
 ```
 
 The seed may be raw bytes, 64 hex chars or base64 — a credential file's encoding
 is decided by whatever wrote it, and a silent mismatch would otherwise surface as
 an unexplainable 401 rather than a clear error at construction.
 
-`Client::Error` carries the server's own `status` and `code`. Authentication
-failures stay a single opaque `401 unauthorized` — the client does not guess at
-or embellish them, because distinguishing them would hand an attacker the oracle
-the server deliberately withholds. `#retryable?` marks the one code whose own
-guidance is "retry later".
+`Client::Error` carries the server's own `status` and `code`, and its message
+includes the server's reason when the server gives one (as for
+`invalid_login_settings`). Authentication failures stay a single opaque
+`401 unauthorized` — the client does not guess at or embellish them, because
+distinguishing them would hand an attacker the oracle the server deliberately
+withholds. `#retryable?` marks the one code whose own guidance is "retry later".

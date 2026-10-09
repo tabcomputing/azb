@@ -182,7 +182,13 @@ module AzookaBay
       rescue JSON::ParseException
         raise Error.new(res.status_code, "bad_response", "azooka bay returned non-JSON (#{res.status_code})")
       end
-      raise Error.new(res.status_code, parsed["error"]?.try(&.as_s?) || "unknown") unless res.success?
+      unless res.success?
+        code = parsed["error"]?.try(&.as_s?) || "unknown"
+        # A few errors carry the server's reason (e.g. invalid_login_settings
+        # says what's wrong); authentication failures never do.
+        reason = parsed["message"]?.try(&.as_s?)
+        raise Error.new(res.status_code, code, reason ? "azooka bay: #{code} (#{res.status_code}): #{reason}" : nil)
+      end
       parsed
     end
 
@@ -267,6 +273,35 @@ module AzookaBay
     def login_verify_code(email : String, code : String) : Login
       r = post("/v1/login/verify", {"email" => email, "code" => code})
       Login.new(r["user_id"].as_s, r["email"].as_s, r["redirect_path"]?.try(&.as_s?))
+    end
+
+    # Set this site's own login presentation (server v0.8.0+): the method
+    # ("link", "code" or "both"), the code's look (`code_style` "digits"
+    # with `code_length` 6-10, or "vocab": `code_length` entries from
+    # `vocab` joined by `separator`), what the email calls it (`label`), and
+    # the email copy (templates with {site} {label} {code} {link} {minutes};
+    # the fallback email is the link sent after too many wrong codes).
+    #
+    # Whole-set: anything omitted returns to its default. Idempotent, so a
+    # site can call it on every deploy; returns whether anything changed.
+    # The server validates it all (strength floor, prefix-free vocabulary,
+    # templates) and refuses with 400 invalid_login_settings and the reason.
+    # The landing URL and From address are the operator's: not settable here.
+    def set_login(method : String, *, code_style : String? = nil, code_length : Int32? = nil,
+                  vocab : Array(String)? = nil, separator : String? = nil, label : String? = nil,
+                  email_subject : String? = nil, email_body : String? = nil,
+                  fallback_subject : String? = nil, fallback_body : String? = nil) : Bool
+      payload = {"method" => JSON::Any.new(method)}
+      payload["code_style"] = JSON::Any.new(code_style) if code_style
+      payload["code_length"] = JSON::Any.new(code_length.to_i64) if code_length
+      payload["vocab"] = JSON::Any.new(vocab.map { |v| JSON::Any.new(v) }) if vocab
+      payload["separator"] = JSON::Any.new(separator) if separator
+      payload["label"] = JSON::Any.new(label) if label
+      payload["email_subject"] = JSON::Any.new(email_subject) if email_subject
+      payload["email_body"] = JSON::Any.new(email_body) if email_body
+      payload["fallback_subject"] = JSON::Any.new(fallback_subject) if fallback_subject
+      payload["fallback_body"] = JSON::Any.new(fallback_body) if fallback_body
+      put("/v1/site/login", payload)["changed"].as_bool
     end
 
     # A member's standing in this site's realm (server v0.6.0+): cheap to
