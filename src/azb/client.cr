@@ -204,6 +204,11 @@ module AzookaBay
     record Transaction, transaction_id : Int64, balance : Int64, replay : Bool
     record Reversal, transaction_id : Int64, reversed_id : Int64, replay : Bool
     record Award, award_id : Int64, collectible : String, copy_no : Int32, replay : Bool
+    # A member's standing in the calling site's realm (server v0.6.0+,
+    # GET /v1/user). `hold` is opaque JSON (render message/url verbatim; a
+    # site learns WHETHER, never WHY), nil when active.
+    record Standing, user_id : String, realm : String, active : Bool,
+      hold : JSON::Any?, member_since : String?
     # `hold` is the account-inactive signal (server v0.4.1+): nil when the
     # user is active (also nil against older servers that never send it, and
     # nil is normalized from an explicit JSON null too), otherwise an opaque
@@ -233,7 +238,9 @@ module AzookaBay
       get("/v1/whoami")
     end
 
-    # Mint a magic-link token and email it, branded as this site.
+    # Email the user a way in, branded as this site: a magic link, a typed
+    # code (the "Magic Word", server v0.7.0+), or both — whichever the
+    # site's login method is (set by the Azooka Bay operator).
     #
     # Always 202, whether the address has an account, is new, or is silently
     # rate-limited — the server refuses to be an account-existence oracle. A
@@ -251,6 +258,25 @@ module AzookaBay
     def login_verify(token : String) : Login
       r = post("/v1/login/verify", {"token" => token})
       Login.new(r["user_id"].as_s, r["email"].as_s, r["redirect_path"]?.try(&.as_s?))
+    end
+
+    # Redeem a typed login code (server v0.7.0+): the code from the email,
+    # as the user typed it (case, spaces and hyphens don't matter), with the
+    # address it was sent to. Every failure is the same 401 invalid_code —
+    # wrong, used, expired, too many tries — so show one message for all.
+    def login_verify_code(email : String, code : String) : Login
+      r = post("/v1/login/verify", {"email" => email, "code" => code})
+      Login.new(r["user_id"].as_s, r["email"].as_s, r["redirect_path"]?.try(&.as_s?))
+    end
+
+    # A member's standing in this site's realm (server v0.6.0+): cheap to
+    # poll for re-validating a session. A non-member is an unknown user (404).
+    # Fail OPEN when Azooka Bay is unreachable.
+    def user(user_id : String) : Standing
+      r = get("/v1/user?user_id=#{URI.encode_www_form(user_id)}")
+      hold = r["hold"]?.try { |h| h.raw.nil? ? nil : h }
+      Standing.new(r["user_id"].as_s, r["realm"].as_s, r["active"].as_bool, hold,
+        r["member_since"]?.try(&.as_s?))
     end
 
     # Mint asset to a user. `kind` is "grant" (winnings, promos, comps) or
@@ -283,6 +309,9 @@ module AzookaBay
       Reversal.new(r["transaction_id"].as_i64, r["reversed_id"].as_i64, r["replay"]?.try(&.as_bool?) || false)
     end
 
+    # Removed from the server in v0.6.0 (game inventory belongs to the game,
+    # not Azooka Bay): against v0.6.0+ this raises Client::Error (404).
+    @[Deprecated("Azooka Bay v0.6.0 removed /v1/award: keep inventory in your own service")]
     def award(user_id : String, collectible : String, idempotency_key : String,
               copy_no : Int32? = nil, metadata : Hash(String, JSON::Any)? = nil) : Award
       payload = {"user_id" => JSON::Any.new(user_id), "collectible" => JSON::Any.new(collectible),

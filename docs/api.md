@@ -5,6 +5,22 @@ All endpoints except `GET /health` require an AZB1 signature (see
 are always an opaque `401 {"error":"unauthorized"}`; errors below are
 post-authentication. Malformed JSON bodies get `400 {"error":"bad_json"}`.
 
+## Realm membership
+
+Every endpoint that names a user (`issue`, `spend`, `balance`,
+`valuables`, `profile`, `vault`, `user`) acts within the calling site's
+**realm**, and the user must be a **member** of that realm.
+- A user becomes a member at their first verified login through one of
+  the realm's sites (`/v1/login/verify`).
+- **A non-member is reported exactly like an unknown user:**
+  `404 {"error":"unknown_user"}`. No realm can probe whether a person has
+  an account in another.
+- **`user_inactive` (403)** means the user is suspended or closed either
+  network-wide or in *this* realm. A suspension in one realm leaves the
+  user's other realms untouched.
+- Reads still answer for inactive members and carry a `hold`; writes
+  refuse.
+
 ## Idempotency
 
 Every mutating call takes a caller-chosen `idempotency_key` (printable
@@ -22,12 +38,24 @@ Unsigned liveness probe. → `200 {"ok":true}`
 
 ## GET /v1/whoami
 
-Signed no-op proving the full authentication path.
-→ `200 {"site":"pirate-ship","key":"pirate-ship-20260726-b0c3"}`
+Signed no-op proving the full authentication path — and the calling
+site's own standing, so a deployment's `/health` can report what is
+*wired* (grants in place) rather than merely configured. A site sees
+only its own grants, never another's.
+
+→ `200 {"site":"pirate-ship","key":"pirate-ship-20260726-b0c3",
+        "realm":"silicon-circus","capabilities":{"circus_token":["issue","spend"]}}`
 
 ## POST /v1/login/start
 
-Mint a magic-link token and email it, branded as the calling site.
+Email the user a way in, branded as the calling site. What the email
+carries depends on the site's **login method** (set by the operator,
+`azookabay-enroll login`):
+
+- `link` (the default): a magic link;
+- `code`: a typed code, which the user enters on the page that asked (see
+  [Typed login codes](#typed-login-codes-the-magic-word));
+- `both`: the code and a link; using either kills the other.
 
 ```json
 {"email": "tom@example.com", "redirect_path": "/midway", "request_ip": "203.0.113.9"}
@@ -42,41 +70,89 @@ silently). No enumeration oracle. The user record is *not* created here.
 | Error | Status | Meaning |
 |---|---|---|
 | `bad_email` | 400 | not an email address |
-| `bad_redirect_path` | 400 | must start with `/`, no whitespace |
-| `login_not_configured` | 500 | site has no `link_base_url`, or no From resolves (site override and realm default both empty) |
+| `bad_redirect_path` | 400 | must start with `/`, no whitespace, and not `//`/`/\\` (protocol-relative open-redirect guard) |
+| `login_not_configured` | 500 | a link-capable site has no `link_base_url`, a code-capable site has no code style, or no From resolves (site override and realm default both empty) |
 | `email_failed` | 502 | mail provider refused; retry later |
 
 The emailed link is `<site.link_base_url>?token=<token>`, valid 15
-minutes, single-use, bound to the requesting site. Only the token's
-SHA-256 is stored.
+minutes, bound to the requesting site. Only the token's SHA-256 is
+stored. Redeemable up to the site's `login_max_redemptions` (default 1 =
+single-use) within that lifetime — raise it to tolerate corporate mail
+scanners (Safe Links/Proofpoint/Mimecast) that GET the link before the
+human clicks. The short expiry stays the real control; and the better
+fix is a landing page that redeems on a user gesture / JS, which
+scanners do not execute.
 
 ## POST /v1/login/verify
 
 Redeem the token from the link (the site extracts it from its landing
-route and calls this over the backchannel).
+route and calls this over the backchannel):
 
 ```json
 {"token": "aB3xK9..."}
 ```
 
+or the typed code, with the email it was sent to:
+
+```json
+{"email": "tom@example.com", "code": "Ali Ka Thul Zam Vex"}
+```
+
 → `200 {"user_id":"<uuid>","email":"tom@example.com","redirect_path":"/midway"}`
 
-First verified login **creates** the user. The site then sets its own
+First verified login **creates** the user (one account per email,
+network-wide), and a verified login makes the user a **member** of the
+site's realm, if they were not already. The site then sets its own
 session; Azooka Bay plays no further part in the session.
 
 | Error | Status | Meaning |
 |---|---|---|
-| `invalid_token` | 401 | unknown, expired, consumed, or minted for another site — deliberately indistinguishable |
-| `user_inactive` | 403 | account suspended or closed |
+| `missing_params` | 400 | neither `token` nor both `email` and `code` |
+| `invalid_token` | 401 | unknown, expired, over the site's redemption ceiling, or minted for another site — deliberately indistinguishable |
+| `invalid_code` | 401 | wrong, used, expired, killed after 5 wrong tries, over the address's daily failure cap, no login pending, or another site's — deliberately indistinguishable |
+| `user_inactive` | 403 | account suspended or closed, network-wide or in this site's realm |
+
+### Typed login codes (the Magic Word)
+
+A magic link signs in only the browser that opens it. In practice that
+means a stray new tab, the wrong browser when a phone's mail app opens it,
+and a target for corporate mail scanners. A **typed code** works on the
+page that asked, on any device. A code-only site sends no link at all.
+
+- **Azooka Bay generates every code**; the site chooses its look:
+  - digits (6–10): `482913`. Give your input field
+    `autocomplete="one-time-code"` so iOS and macOS can offer the code
+    from Mail;
+  - the site's own **vocabulary** (syllables or words), N picked at random
+    and joined by a separator: `ali-ka-thul-zam-vex`. The flavour is the
+    site's; the strength is enforced by AB (at least a million possible
+    codes).
+- **Typing is forgiving:** case, spaces, hyphens and punctuation are
+  ignored.
+- **Guarded:**
+  - one use, for the site that asked, within the login's 15 minutes;
+  - 5 wrong tries kills that login's code, and a daily cap on failures
+    per address and site bounds long-run guessing;
+  - every failure is the same `invalid_code`;
+  - stored only as a bcrypt hash.
+- **The email** shows the code in a large block that a single tap selects
+  where the mail client allows it (Apple Mail, iOS). A real copy button is
+  impossible because mail clients strip script. The subject and body can
+  be the site's own (in character), and Azooka Bay always adds its safety
+  lines ("never share your …", "didn't ask for this?").
+- With method `both`, redeeming the link kills the code and vice versa.
+  If you also raise `login_max_redemptions` for mail scanners, redeem
+  links on a user gesture or in JavaScript, or a scanner's prefetch will
+  kill the user's code.
 
 ## POST /v1/issue
 
 Mint asset to a user. Requires `may_issue` on the asset.
 
 ```json
-{"user_id": "<uuid>", "asset": "bones", "amount": 20,
+{"user_id": "<uuid>", "asset": "circus_token", "amount": 20,
  "idempotency_key": "stripe_cs_123", "kind": "purchase",
- "description": "$1.00 -> 20 bones", "metadata": {"stripe_session": "cs_123"}}
+ "description": "$5.00 -> 20 circus tokens", "metadata": {"stripe_session": "cs_123"}}
 ```
 `kind`: `"purchase"` (issued for payment — reconciles against Stripe) or
 `"grant"` (winnings, promos, bonuses; the default). Creates the user's
@@ -98,7 +174,7 @@ account for the asset on first grant.
 One-call debit — the arcade path. Requires `may_spend`.
 
 ```json
-{"user_id": "<uuid>", "asset": "bones", "amount": 1,
+{"user_id": "<uuid>", "asset": "circus_token", "amount": 1,
  "idempotency_key": "play_9f3a", "description": "arcade play"}
 ```
 
@@ -111,6 +187,10 @@ Errors as for issue, minus `bad_kind`, plus:
 | `insufficient_balance` | 409 |
 
 ## POST /v1/reverse
+
+Deliberately not gated on the user's membership or standing: a site
+reverses only its own transactions, and correcting a suspended member's
+transaction is exactly what reversal is for.
 
 Compensating transaction: posts the exact negation of the original's
 entries. A site may reverse **only transactions it created** — creation
@@ -132,41 +212,42 @@ authority implies reversal authority, nothing wider.
 | `cannot_reverse_reversal` | 422 | re-post instead |
 | `idempotency_mismatch` | 422 | |
 
-## POST /v1/award
+## GET /v1/balance?user_id=<uuid>
 
-Place a collectible on a user's shelf. No journal involvement. Any venue
-in the collectible's realm may award; the collectible is addressed by
-code within the calling site's realm.
+Hot-path display read — every asset the user holds in the calling site's
+realm, **balances only**. No `flows` aggregate and no `hold`, so it is
+flat regardless of ledger history: a handful of indexed rows. This is the
+arcade cabinet wallet.
 
-```json
-{"user_id": "<uuid>", "collectible": "kraken-slayer",
- "idempotency_key": "badge_881", "metadata": {"score": 5000}}
-```
-`copy_no` optional — omitted, the next free slot is taken (capped at the
-collectible's `max_per_user`).
+→ `200 {"user_id":"<uuid>","realm":"silicon-circus","balances":{"circus_token":22}}`
 
-→ `200 {"award_id": 7, "collectible": "kraken-slayer", "copy_no": 1, "replay": false}`
+For the coin drop itself use **`/v1/spend`** — attempting the spend IS
+the balance check (race-free), and its response already carries the new
+balance. Reach for `/v1/balance` only to paint a number frequently.
+Unlike other endpoints, a *successful* balance read is not audited
+per-hit (it is a display poll); its denials are.
 
 | Error | Status |
 |---|---|
-| `bad_user_id` / `bad_idempotency_key` / `bad_copy_no` | 400 |
-| `user_inactive` | 403 |
-| `unknown_collectible` | 404 (includes other realms' collectibles) |
+| `missing_user_id` / `bad_user_id` | 400 |
 | `unknown_user` | 404 |
-| `award_limit_reached` / `already_awarded` | 409 |
-| `idempotency_mismatch` | 422 |
 
 ## GET /v1/valuables?user_id=<uuid>
 
-Everything the user owns, through the calling site's realm wall.
+Everything the user owns, through the calling site's realm wall — plus
+`flows`: the signed lifetime sum of the user's entries per asset, grouped
+by transaction kind. Raw journal truth, uninterpreted (reversals appear
+under `reversal` as signed nets). This is the input for venue-side
+loyalty math ("how much has this account genuinely purchased"):
+discount ladders are venue policy computed from
+`flows["<asset>"]["purchase"]`; the ledger only reports what happened.
 
 → `200`
 ```json
 {"user_id": "<uuid>", "realm": "silicon-circus",
- "balances": {"bones": 25, "emeralds": 50},
- "collectibles": [
-   {"code": "kraken-slayer", "copy_no": 1,
-    "awarded_at": "2026-07-29T12:00:00Z", "metadata": {"score": 5000}}]}
+ "hold": null,
+ "balances": {"circus_token": 25},
+ "flows": {"circus_token": {"purchase": 20, "grant": 5, "spend": -1, "reversal": 1}}}
 ```
 
 | Error | Status |
@@ -175,7 +256,36 @@ Everything the user owns, through the calling site's realm wall.
 | `unknown_user` | 404 |
 
 Inactive users are readable (their property record persists); only
-transacting is blocked.
+transacting is blocked. **`hold`** is the side-effect-free way to learn a
+user is no longer good: `null` (or absent, on older servers) when active;
+otherwise `{"message": <text>?, "url": <url>?}`. Its mere presence is the
+signal "inactive — stop"; the message/url are copy Azooka Bay authored
+**for the user**, rendered verbatim by the site, which never learns the
+reason (suspended vs closed, or why). A site polling this to re-validate
+long-lived sessions should fail OPEN if Azooka Bay is unreachable — an
+outage must never sign the network out.
+
+## GET /v1/user?user_id=<uuid>
+
+A member's standing in the calling site's realm: may they act, and if
+not, the copy to show them. Use it to re-check a session cheaply (it
+reads one membership row).
+
+→ `200 {"user_id":"<uuid>","realm":"silicon-circus","active":true,"hold":null,"member_since":"2026-10-01T12:00:00Z"}`
+
+When inactive, `"active": false` and `hold` is
+`{"message": ..., "url": ...}`. That copy is authored by Azooka Bay
+*for the user*; render it verbatim. Sites learn **whether**, never
+**why**: suspended and closed, network-wide or in this realm, all look
+the same.
+
+Like `/v1/balance`, a *successful* read is a display poll and is not
+audited per-hit; its denials are.
+
+| Error | Status |
+|---|---|
+| `missing_user_id` / `bad_user_id` | 400 |
+| `unknown_user` | 404 (no such user, or not a member of this realm) |
 
 ## GET /v1/profile?user_id=<uuid>
 
@@ -183,7 +293,10 @@ Realm-scoped shared metadata — what every venue in the realm agrees on
 about a user (display name, level, preferences). Scoped to the calling
 site's realm; other realms' entries are invisible.
 
-→ `200 {"user_id":"<uuid>","realm":"silicon-circus","profile":{"display_name":"Captain Tom","level":3}}`
+→ `200 {"user_id":"<uuid>","realm":"silicon-circus","hold":null,"profile":{"display_name":"Captain Tom","level":3}}`
+
+`hold` is the same side-effect-free inactive signal documented under
+`/v1/valuables` — `null`/absent when active, an object otherwise.
 
 | Error | Status |
 |---|---|
@@ -213,6 +326,135 @@ The audit log records which keys changed, never the values.
 | `bad_user_id` / `bad_key` / `no_entries` / `too_many_keys` | 400 |
 | `user_inactive` | 403 (writes need an active user; reads do not) |
 | `unknown_user` | 404 |
+
+## GET /v1/stats
+
+Aggregate activity for the **calling site only** — the numbers an admin
+panel's pulse wants. Never a sister site's, never another realm's, and
+counts only: no emails, no user ids. Read from the audit log, so it
+covers everything since the site was enrolled.
+
+→ `200`
+```json
+{"site": "guest-services", "as_of": "2026-09-29T23:10:00Z",
+ "windows": {
+   "15m": {"users_logged_in": 4, "new_users": 1, "login_emails_sent": 5,
+           "login_emails_failed": 0, "login_links_rejected": 1, "users_transacting": 3},
+   "24h": {...}, "7d": {...}, "30d": {...}}}
+```
+
+| Field | Meaning |
+|---|---|
+| `users_logged_in` | distinct users who completed a login here in the window |
+| `new_users` | of those, users whose **first ever** login here falls in the window (an account made at another realm's door is still new here) |
+| `login_emails_sent` | magic-link emails actually handed to the mail provider |
+| `login_emails_failed` | the provider refused the send (`502 email_failed`) — nonzero is an alarm |
+| `login_links_rejected` | redemptions of dead links: expired, already used, or never valid |
+| `users_transacting` | distinct users with a successful issue or spend here (idempotent replays excluded — a retry moves no value) |
+
+**It cannot say who is logged in *right now*.** The session belongs to the
+site — Azooka Bay verifies the link and steps out — so "now" is the site's
+own request traffic. The useful pairing: the site counts who it has seen
+recently, and `users_logged_in` for the site's session lifetime is the
+ceiling on how many people could hold a valid session (a site with
+30-day cookies reads the `30d` window).
+
+Throttled twice, per site: results are **cached for 60 s** (`as_of` is
+the database time they were computed at; polling faster returns the same
+numbers), and past **20 calls a minute** the site gets
+`429 {"error":"rate_limited"}` with a `Retry-After` header. Both are per
+server process (N instances allow N× the calls). Like `/v1/balance`, a
+successful stats read is a display poll and is not audited per-hit; only
+the first 429 in each window is. The query is capped at 5 s. If it fails
+the site gets `503 {"error":"stats_unavailable"}` with a `Retry-After`,
+and the failure is cached like a result: the next attempt happens after
+the TTL, not on every call. Show your last good numbers meanwhile.
+
+Before v0.4.4 ledger audit rows recorded the user id as the site spelled
+it; a site that varied its spelling (case, hyphens) can be over-counted
+in `users_transacting` for the first 30 days after upgrading.
+
+| Error | Status |
+|---|---|
+| `rate_limited` | 429 |
+| `stats_unavailable` | 503 |
+
+## Vault — safe deposit boxes (`/v1/vault`)
+
+Small sensitive values a site keeps for a user: a birthday, a shipping
+address, a token, your own ciphertext. **Opaque to Azooka Bay**: a value
+is a string (1 byte to 16 KiB) that AB stores and returns byte for byte.
+It never parses, validates, interprets, or logs it. What a box holds is
+the site's business; AB's business is the vault:
+
+- **Encrypted at rest.** AES-256-GCM with a fresh data key per value,
+  each wrapped by a master key that lives only in the server's
+  environment, never in the database or its backups. A database dump
+  yields ciphertext.
+- **Realm-scoped.** Boxes belong to the calling site's realm: a box
+  written at Silicon Circus is invisible to Onboard, even under the same
+  label.
+- **Granted per label.** The label (`box`) is the site's choice
+  (`[a-z0-9][a-z0-9_.-]{0,63}`). A site may read or write a label only
+  with an operator grant (`azookabay-enroll vault-grant`), made with a
+  signing key enrolled for vault use. Both are sealed with the vault's
+  master key, so they cannot be forged in the database. Anything missing
+  gives `403`, checked before the user is looked up, so the site learns
+  nothing. A site's new signing key reaches the vault only once it is
+  sealed: `rotate` does that at mint when the operator holds the vault key;
+  otherwise the operator runs `azookabay-enroll vault-seal-key`.
+- **Audited, without contents.** Every call is written to the audit log,
+  with who, which label, and when. Values are never logged.
+- **Deletable.** `DELETE` removes the box from the live database. Backups
+  keep a sealed copy, which stays openable until the master key it was
+  wrapped under is retired and destroyed.
+
+Want AB unable to read a value even in principle? Seal it yourself before
+the `PUT`; AB's encryption then wraps ciphertext it cannot open.
+
+### PUT /v1/vault
+
+```json
+{"user_id": "<uuid>", "box": "birthday", "value": "1990-06-15"}
+```
+→ `200 {"user_id":"<uuid>","realm":"silicon-circus","box":"birthday","updated_at":"..."}`
+
+Creates or replaces. Needs `write` on the label and an active user.
+
+### GET /v1/vault?user_id=<uuid>&box=<label>
+
+→ `200 {"user_id":"<uuid>","realm":"silicon-circus","box":"birthday","value":"1990-06-15","updated_at":"..."}`
+
+`value` and `updated_at` are `null` when the box is empty. Needs `read`.
+Works for inactive users.
+
+### DELETE /v1/vault?user_id=<uuid>&box=<label>
+
+→ `200 {"user_id":"<uuid>","realm":"silicon-circus","box":"birthday","deleted":true}`
+
+`deleted: false` when there was nothing to delete. Needs `write`. Works
+for inactive users, and on a box that no longer opens, because nothing is
+decrypted.
+
+| Error | Status |
+|---|---|
+| `bad_box` / `bad_user_id` / `bad_value` (empty, over 16 KiB, or not UTF-8) / `missing_params` / `bad_json` | 400 |
+| `capability_denied`: no grant for this label, or a signing key not enrolled for the vault | 403 |
+| `user_inactive` (PUT only) | 403 |
+| `unknown_user` | 404 |
+| `vault_integrity`: a stored box would not open (tampering, or a retired master key). Our fault, audited as an error. | 500 |
+| `vault_unavailable`: this server has no vault key configured (every vault call, delete included) | 503 |
+
+Any request body over 256 KiB, to any endpoint, is refused unread with
+`413 {"error":"body_too_large"}`, before authentication.
+
+## Removed
+
+`POST /v1/award` and the `collectibles` field of `/v1/valuables` were
+removed in v0.6.0, together with zero-value assets. Game inventory
+(badges, doubloons, crackers) has no monetary value and belongs to the
+game, not to Azooka Bay. A call to `/v1/award` now gets
+`404 {"error":"not_found"}`.
 
 ## Not yet implemented
 

@@ -4,9 +4,12 @@ Every API request except `GET /health` must be signed by the calling
 site's Ed25519 private key. Azooka Bay verifies with the registered
 public key — it never holds anything capable of producing a signature.
 
-Reference implementation: `src/azookabay/signing.cr` (sites written in
-Crystal can depend on this shard and use `AzookaBay::Signing` directly —
-the same code the integration tests exercise).
+Reference implementation: the PUBLIC `azb` shard
+(github.com/tabcomputing/azb) — sites written in Crystal depend on it
+and use `AzookaBay::Signing` directly. The server depends on the same
+shard, so a client's canonical string is byte-identical to the
+verifier's by construction. (The algorithm is public by design; the
+secret is the key.)
 
 ## Headers
 
@@ -63,7 +66,10 @@ send — any proxy that rewrites the body or path will break the signature
 All failures return one opaque `401 {"error":"unauthorized"}`. The
 specific reason (missing headers, stale timestamp, unknown key, bad
 signature, replay) is recorded in the audit log only — distinguishing
-them in the response would hand an attacker an oracle.
+them in the response would hand an attacker an oracle. Recording is
+budgeted, because unauthenticated volume is the attacker's to choose:
+past the budget, failures are counted per reason rather than written one
+row each (see architecture.md, "The audit log").
 
 ## Replay defence lifetime
 

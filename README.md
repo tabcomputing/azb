@@ -62,7 +62,9 @@ signed path, or that nonces must never repeat).
 azb = AzookaBay::Client.from_env          # AZB_SITE_ID / AZB_KEY_ID / AZB_PRIVATE_KEY_SEED
 azb.whoami                                 # proves creds, clock and signing end to end
 azb.login_start("tom@example.com", redirect_path: "/midway")
-login = azb.login_verify(token)            # first verify creates the user
+login = azb.login_verify(token)            # from the magic link; first verify creates the user
+login = azb.login_verify_code("tom@example.com", typed)  # or the typed code ("Magic Word"), server v0.7.0+
+azb.user(login.user_id).active             # standing in this realm (server v0.6.0+), for session re-checks
 azb.issue(user_id: login.user_id, asset: "bones", amount: 20,
           idempotency_key: "welcome-#{login.user_id}")
 ```

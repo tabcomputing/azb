@@ -60,6 +60,8 @@ private def with_bay(&block : AzookaBay::Client, FakeBay -> Nil)
     when "/v1/whoami"       then {200, %({"site":"pirate-ship","key":"ps-1"})}
     when "/v1/login/start"  then {202, %({"ok":true})}
     when "/v1/login/verify" then {200, %({"user_id":"u-1","email":"tom@example.com","redirect_path":"/midway"})}
+    when .starts_with?("/v1/user")
+      {200, %({"user_id":"u-1","realm":"silicon-circus","active":false,"hold":{"message":"Paused."},"member_since":"2026-10-01T12:00:00Z"})}
     when "/v1/issue"        then {200, %({"transaction_id":42,"balance":20,"replay":false})}
     when "/v1/spend"        then {200, %({"transaction_id":43,"balance":19,"replay":false})}
     when .starts_with?("/v1/balance") then {200, %({"user_id":"u-1","realm":"silicon-circus","balances":{"bones":25,"emeralds":50}})}
@@ -193,6 +195,12 @@ describe AzookaBay::Client do
       login = client.login_verify("tok")
       login.user_id.should eq "u-1"
       login.redirect_path.should eq "/midway"
+
+      client.login_verify_code("tom@example.com", "Ali Ka Thul").user_id.should eq "u-1"
+      standing = client.user("u-1")
+      standing.active.should be_false
+      standing.hold.not_nil!["message"].should eq "Paused."
+      standing.member_since.should eq "2026-10-01T12:00:00Z"
 
       client.issue(user_id: "u-1", asset: "bones", amount: 20_i64,
                    idempotency_key: "k1").balance.should eq 20
