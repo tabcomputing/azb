@@ -195,8 +195,12 @@ carries a link instead of a code. Redeem it like any magic link.
 Set the calling site's **own login presentation** (server v0.8.0+): how
 its players sign in and how its login emails read. This is the product's
 design, so the product keeps it in its own repo and pushes it, typically
-on every deploy (azb: `client.set_login(...)`). The operator can set the
-same with `azookabay-enroll login`.
+on every deploy. With azb, the usual way is a **login file**,
+`deploy/azb/login.yml` (method and settings, with the vocabulary and
+email bodies as text files beside it): `require "azb/login_file"`, then
+`client.set_login_file("deploy/azb/login.yml")`; or `client.set_login(...)`
+with the values. The operator can apply the same with
+`azookabay-enroll login` (`--file` for a login file).
 
 ```json
 {"method": "code",

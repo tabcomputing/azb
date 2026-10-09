@@ -1,6 +1,8 @@
 require "./spec_helper"
 require "http/server"
 require "socket"
+require "file_utils"
+require "../src/azb/login_file"
 
 # The client is exercised against a real HTTP server that VERIFIES the signature
 # with this shard's own verifier — the same check the Azooka Bay server makes.
@@ -203,6 +205,32 @@ describe AzookaBay::Client do
       sent.keys.sort.should eq %w(code_length code_style email_body label method vocab)
       sent["vocab"].as_a.map(&.as_s).should eq %w(ka zo mi)
       sent["code_length"].as_i.should eq 4
+    end
+  end
+
+  it "pushes a login file as the same PUT" do
+    with_bay do |client, bay|
+      dir = File.tempname("azb-login")
+      Dir.mkdir(dir)
+      begin
+        File.write(File.join(dir, "words.txt"), "ka\nzo\nmi\n")
+        File.write(File.join(dir, "body.txt"), "Words: {code}")
+        File.write(File.join(dir, "login.yml"), <<-YAML)
+          method: code
+          code: { style: vocab, length: 4, vocab_file: words.txt }
+          label: Magic Word
+          email: { body_file: body.txt }
+          YAML
+        client.set_login_file(File.join(dir, "login.yml")).should be_true
+      ensure
+        FileUtils.rm_rf(dir)
+      end
+      bay.verified.should be_true
+      bay.last_path.should eq "/v1/site/login"
+      sent = JSON.parse(bay.last_body.not_nil!).as_h
+      sent.keys.sort.should eq %w(code_length code_style email_body label method vocab)
+      sent["vocab"].as_a.map(&.as_s).should eq %w(ka zo mi)
+      sent["email_body"].as_s.should eq "Words: {code}"
     end
   end
 

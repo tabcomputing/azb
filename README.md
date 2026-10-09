@@ -70,11 +70,31 @@ azb.issue(user_id: login.user_id, asset: "bones", amount: 20,
 
 # the site's own login look (server v0.8.0+): push it on every deploy;
 # whole-set and idempotent, returns whether anything changed
-azb.set_login("code", code_style: "vocab", code_length: 4,
-              vocab: File.read_lines("data/magic_words.txt"), label: "Magic Word",
-              email_subject: "The scroll stirs for {site}",
-              email_body: File.read("data/login_email.txt"))
+azb.set_login("code", code_style: "digits", code_length: 6, label: "code")
 ```
+
+### A login file
+
+A product keeps its login look in its own repo, by convention
+`deploy/azb/login.yml`, with the vocabulary and email bodies as plain-text
+files beside it (paths are relative to the YAML):
+
+```yaml
+method: code
+code: { style: vocab, length: 4, vocab_file: magic-words.txt, separator: "-" }
+label: Magic Word
+email: { subject: "The scroll stirs for {site}", body_file: email-body.txt }
+fallback_email: { subject: "The words fade", body_file: fallback-body.txt }
+```
+
+```crystal
+require "azb/login_file"                      # opt-in: links libyaml
+azb.set_login_file("deploy/azb/login.yml")    # on startup or deploy
+```
+
+`vocab:` and `body:` may be inline instead (not both). The file is strict: an
+unknown key is an error. The Azooka Bay operator can apply the same file with
+`azookabay-enroll login --site <id> --file deploy/azb/login.yml`.
 
 The seed may be raw bytes, 64 hex chars or base64 — a credential file's encoding
 is decided by whatever wrote it, and a silent mismatch would otherwise surface as
