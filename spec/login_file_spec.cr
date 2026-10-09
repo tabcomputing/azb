@@ -66,6 +66,11 @@ describe AzookaBay::LoginFile do
       expect_raises(AzookaBay::LoginFile::Error, /cannot read fallback_email.body_file 'missing.txt'/) { AzookaBay::LoginFile.load(path) }
 
       expect_raises(AzookaBay::LoginFile::Error, /nope.yml/) { AzookaBay::LoginFile.load(File.join(dir, "nope.yml")) }
+
+      File.write(path, "method: code\nlabel: one\nlabel: two\n")
+      expect_raises(AzookaBay::LoginFile::Error, /duplicate key "label"/) { AzookaBay::LoginFile.load(path) }
+      File.write(path, "method: code\nemail: { subject: a, subject: b }\n")
+      expect_raises(AzookaBay::LoginFile::Error, /duplicate key "email.subject"/) { AzookaBay::LoginFile.load(path) }
     end
   end
 end

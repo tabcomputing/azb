@@ -77,7 +77,9 @@ module AzookaBay
 
     def self.load(path : String) : LoginFile
       doc = begin
-        Doc.from_yaml(File.read(path))
+        text = File.read(path)
+        unique_keys!(YAML::Nodes.parse(text), path) # YAML lets a repeated key silently win
+        Doc.from_yaml(text)
       rescue ex : YAML::ParseException
         raise Error.new("#{path}: #{ex.message}")
       rescue ex : File::Error
@@ -89,6 +91,21 @@ module AzookaBay
       new(doc.method, code.try(&.style), code.try(&.length), vocab, code.try(&.separator), doc.label,
         doc.email.try(&.subject), doc.email.try { |e| body_of(e, "email", dir, path) },
         doc.fallback_email.try(&.subject), doc.fallback_email.try { |e| body_of(e, "fallback_email", dir, path) })
+    end
+
+    private def self.unique_keys!(node : YAML::Nodes::Node, path : String, at : String = "") : Nil
+      case node
+      when YAML::Nodes::Document, YAML::Nodes::Sequence
+        node.nodes.each { |n| unique_keys!(n, path, at) }
+      when YAML::Nodes::Mapping
+        seen = Set(String).new
+        node.nodes.each_slice(2) do |pair|
+          k, v = pair[0], pair[1]?
+          key = k.is_a?(YAML::Nodes::Scalar) ? k.value : k.to_s
+          raise Error.new("#{path}: duplicate key #{(at + key).inspect}") unless seen.add?(key)
+          unique_keys!(v, path, "#{at}#{key}.") if v
+        end
+      end
     end
 
     private def self.vocab_of(c : CodeDoc, dir : String, path : String) : Array(String)?

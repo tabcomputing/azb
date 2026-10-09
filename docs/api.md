@@ -227,10 +227,18 @@ so. **Whole-set:** an omitted field returns to its default (AB's default
 email copy, label "code"), so always send the full presentation.
 
 - Validated exactly as the operator's command is: at least a million
-  distinct codes, a prefix-free vocabulary, templates that carry what the
-  method needs. AB always adds its own safety lines to the email.
-- A real change is audited (`site_login`, with the key that made it); an
-  unchanged push writes nothing.
+  distinct codes, a prefix-free vocabulary (its order doesn't matter),
+  digits with no vocabulary or separator, a one-line label of up to 40
+  characters, templates that carry what the method needs. AB always adds
+  its own safety lines to the email.
+- **Templates can't contain web or email addresses** (`https://…`,
+  `www.…`, `name@domain`, or a bare `domain.tld`). Mail apps would turn
+  them into links, and the only link in a login email is the one AB puts
+  at `{link}`, on the site's own landing page. No control characters;
+  valid UTF-8.
+- A real change is audited (`site_login`, with the key that made it) with
+  the templates' full text, so what the emails said stays on record; an
+  unchanged push writes nothing. At most 30 changes per site per 24 hours.
 - **Not settable here, by design:** the landing URL (`link_base_url`) and
   the From and reply-to addresses. A stolen site key that could change
   them could point login links at another server, or send mail as your
@@ -240,6 +248,7 @@ email copy, label "code"), so always send the full presentation.
 |---|---|---|
 | `invalid_login_settings` | 400 | refused, with `message` saying why (e.g. `digits codes must be 6-10 long`) |
 | `bad_json` | 400 | not JSON, or a field that isn't in the table above (e.g. `link_base_url`) |
+| `too_many_changes` | 429 | over 30 changes in 24 hours; an unchanged push still answers 200 |
 
 ## POST /v1/issue
 
