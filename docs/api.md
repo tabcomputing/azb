@@ -521,7 +521,8 @@ The flow:
 3. Stripe sends the buyer back to the realm's `return_url`, with the
    session id where the URL says `{CHECKOUT_SESSION_ID}`. The return page
    asks `GET /v1/checkout?session_id=…` every couple of seconds until the
-   status is no longer `open`.
+   status is no longer `open`, and checks the `user_id` is the signed-in
+   buyer's.
 4. The coins are credited once, whichever comes first: the webhook, or
    that read. The browser coming back proves nothing by itself.
 
@@ -544,7 +545,10 @@ display read: not audited per hit.
 
 `ui`: `"embedded"` or `"hosted"` (the default). The user must be an active
 member. Name, price and quantity are the SKU's at that moment; a later
-price change doesn't touch an open checkout.
+price change doesn't touch an open checkout. Stripe's page takes a payment
+for an hour; the buyer types their email there (Azooka Bay doesn't tell
+sites members' addresses, and Stripe's page would). A buyer has at most 5
+checkouts live in a realm at once.
 
 → `200 {"payment_id": 12, "session_id": "cs_live_…", "client_secret": "cs_live_…_secret_…",
         "url": null, "publishable_key": "pk_live_…",
@@ -554,7 +558,9 @@ price change doesn't touch an open checkout.
 same idempotency key returns the same session (`"replay": true`) while
 it's open, and finishes opening it if Stripe didn't answer the first time.
 Once it's closed (paid, expired, failed), the key answers
-`409 checkout_closed`: a new purchase takes a new key.
+`409 checkout_closed`: a new purchase takes a new key. A retry is checked
+like a new checkout: once the site's `sell` is revoked or the buyer is
+suspended, it's refused.
 
 | Error | Status |
 |---|---|
@@ -564,7 +570,8 @@ Once it's closed (paid, expired, failed), the key answers
 | `unknown_sku` (not the realm's, or retired) / `unknown_user` / `not_selling` | 404 |
 | `checkout_closed` | 409 |
 | `idempotency_mismatch` | 422 |
-| `stripe_refused`: Stripe said no (`message` says why); this checkout is closed | 502 |
+| `too_many_checkouts`: the buyer has 5 live already | 429 |
+| `stripe_refused`: Stripe said no (the server's log says why); this checkout is closed | 502 |
 | `stripe_unreachable`: no answer from Stripe; retry under the same key | 502 |
 | `payments_unavailable`: this server has no Stripe key for the realm | 503 |
 
@@ -572,15 +579,28 @@ Once it's closed (paid, expired, failed), the key answers
 
 Only the site that opened the checkout can see it.
 
-→ `200 {"session_id":"cs_live_…","status":"settled","sku":"coins-20","asset":"scc",
-        "quantity":20,"amount_cents":500,"currency":"usd","transaction_id":88,"balance":120}`
+→ `200 {"session_id":"cs_live_…","user_id":"<uuid>","status":"settled","sku":"coins-20",
+        "asset":"scc","quantity":20,"amount_cents":500,"currency":"usd",
+        "transaction_id":88,"balance":120}`
 
-`status`: `open`, `settled`, `expired`, `failed`, `refunded` or
-`charged_back`. While it's `open`, Azooka Bay asks Stripe itself (at most
-once every 2 seconds per checkout, however often the page asks), so a late
-webhook doesn't keep the buyer waiting. `balance` is the buyer's balance
-of the asset once settled. A display poll: not audited per hit (settling
-always is). Errors: `400 bad_session_id`, `404 unknown_checkout`.
+`user_id` is the buyer: a return page shows a purchase only to them (a
+session id in a URL can be someone else's).
+
+`status`:
+- `open`: Stripe's page is live. Azooka Bay asks Stripe itself (at most
+  once every 2 seconds per checkout, however often the page asks), so a
+  late webhook doesn't keep the buyer waiting.
+- `processing`: paid by a method that takes days to clear (a bank debit).
+  The coins come when Stripe says it cleared; the page can stop asking.
+- `settled`: paid and credited. `balance` is the buyer's balance of the
+  asset.
+- `expired`, `failed`: never paid.
+- `mismatched`: paid, but not what was offered; nothing was credited, and
+  it's the operator's to look into.
+- `refunded`, `charged_back`: paid, then the money went back.
+
+A display poll: not audited per hit (settling always is). Errors:
+`400 bad_session_id`, `404 unknown_checkout`.
 
 ### Refunds and chargebacks
 
@@ -589,7 +609,9 @@ the buyer still holds: the whole purchase reversed if they hold it all,
 otherwise everything they hold of the asset, as an adjustment. The rest
 is recorded on the payment as lost (spent before the money went back),
 and the status becomes `refunded` or `charged_back`. A partial refund
-changes no coins: it's audited for the operator to settle by hand.
+changes no coins: it's audited for the operator to settle by hand. A
+refund Stripe reports before the payment itself (events come in no set
+order) is handled the same: the payment is credited first, then taken back.
 Azooka Bay doesn't suspend the buyer; that's the realm's policy (the
 operator's `member` command).
 
@@ -611,7 +633,8 @@ The events it acts on are `checkout.session.completed`,
 `charge.refunded` and `charge.dispute.created`. Every one is idempotent,
 since Stripe delivers at least once and in no promised order. Events for
 checkouts Azooka Bay didn't open (another integration's sales on the same
-account) are ignored.
+account, whatever reference they carry) and events of the other mode
+(test on a live server, or live on a test one) are ignored.
 
 ## Vault — safe deposit boxes (`/v1/vault`)
 

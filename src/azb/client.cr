@@ -241,9 +241,12 @@ module AzookaBay
     # (hosted). Opening one credits nothing; Stripe's word does.
     record Checkout, payment_id : Int64, session_id : String, client_secret : String?,
       url : String?, publishable_key : String, expires_at : String?, replay : Bool
-    # status: open, settled, expired, failed, refunded or charged_back.
-    # `balance` is the buyer's balance of the asset once settled.
-    record CheckoutStatus, session_id : String, status : String, sku : String,
+    # status: open, processing (a bank debit clearing: the coins come when
+    # it does), settled, expired, failed, mismatched (paid, not what was
+    # offered: nothing credited), refunded or charged_back. `balance` is the
+    # buyer's balance of the asset once settled. `user_id` is the buyer:
+    # show a purchase only to them (a session id in a URL can be anyone's).
+    record CheckoutStatus, session_id : String, user_id : String, status : String, sku : String,
       asset : String, quantity : Int64, amount_cents : Int64, currency : String,
       transaction_id : Int64?, balance : Int64? do
       def settled? : Bool
@@ -447,7 +450,7 @@ module AzookaBay
     # Stripe says it's paid and its webhook hasn't arrived yet.
     def checkout_status(session_id : String) : CheckoutStatus
       r = get("/v1/checkout?session_id=#{URI.encode_www_form(session_id)}")
-      CheckoutStatus.new(r["session_id"].as_s, r["status"].as_s, r["sku"].as_s, r["asset"].as_s,
+      CheckoutStatus.new(r["session_id"].as_s, r["user_id"].as_s, r["status"].as_s, r["sku"].as_s, r["asset"].as_s,
         r["quantity"].as_i64, r["amount_cents"].as_i64, r["currency"].as_s,
         r["transaction_id"]?.try(&.as_i64?), r["balance"]?.try(&.as_i64?))
     end

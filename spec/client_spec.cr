@@ -77,7 +77,7 @@ private def with_bay(&block : AzookaBay::Client, FakeBay -> Nil)
     when "/v1/skus"         then {200, %({"realm":"silicon-circus","publishable_key":"pk_test_x","skus":[{"id":"coins-20","name":"20 Coins","asset":"scc","quantity":20,"cents":500}]})}
     when "/v1/checkout"     then {200, %({"payment_id":7,"session_id":"cs_test_1","client_secret":"cs_test_1_secret","url":null,"publishable_key":"pk_test_x","expires_at":"2026-10-21T18:00:00Z","replay":false})}
     when .starts_with?("/v1/checkout?session_id=")
-      {200, %({"session_id":"cs_test_1","status":"settled","sku":"coins-20","asset":"scc","quantity":20,"amount_cents":500,"currency":"usd","transaction_id":88,"balance":20})}
+      {200, %({"session_id":"cs_test_1","user_id":"u-1","status":"settled","sku":"coins-20","asset":"scc","quantity":20,"amount_cents":500,"currency":"usd","transaction_id":88,"balance":20})}
     when "/v1/stripe-down"  then {502, %({"error":"stripe_unreachable","message":"no answer"})}
     when "/v1/bad-settings" then {400, %({"error":"invalid_login_settings","message":"digits codes must be 6-10 long"})}
     when "/v1/nope"         then {401, %({"error":"unauthorized"})}
@@ -280,6 +280,7 @@ describe AzookaBay::Client do
       status = client.checkout_status("cs_test_1")
       bay.last_path.should eq "/v1/checkout?session_id=cs_test_1"
       status.settled?.should be_true
+      status.user_id.should eq "u-1"
       status.balance.should eq 20
       ex = expect_raises(AzookaBay::Client::Error) { client.post("/v1/stripe-down", {"x" => 1}) }
       ex.retryable?.should be_true

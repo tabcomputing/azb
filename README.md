@@ -78,6 +78,7 @@ co = azb.checkout(login.user_id, "coins-20", "buy-#{order_id}", ui: "embedded")
 # page: mount Stripe's embedded Checkout with co.publishable_key + co.client_secret
 # (or, for ui: "hosted", send the buyer to co.url)
 status = azb.checkout_status(session_id)   # on the return page; poll while open?
+status.user_id == login.user_id            # show it only to its buyer
 status.settled?                            # credited once, on Stripe's word only
 ```
 
