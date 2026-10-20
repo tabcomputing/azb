@@ -70,10 +70,11 @@ module AzookaBay
         @status == 401 && @code == "unauthorized"
       end
 
-      # Retryable by the caller: the mail provider refused, and the server's own
-      # guidance for this code is "retry later".
+      # Retryable by the caller: the mail provider refused, or Stripe never
+      # answered (retry a checkout under the SAME idempotency key), and the
+      # server's own guidance for the code is "retry later".
       def retryable? : Bool
-        @code == "email_failed"
+        @code == "email_failed" || @code == "stripe_unreachable"
       end
     end
 
@@ -230,6 +231,30 @@ module AzookaBay
       end
     end
 
+    # Selling through Azooka Bay (server v0.9.0+). A SKU is a bundle of one
+    # of the realm's assets at a price, from the realm's file; `cents` is
+    # what the buyer pays.
+    record Sku, id : String, name : String, asset : String, quantity : Int64, cents : Int64
+    record Catalog, realm : String, publishable_key : String, skus : Array(Sku)
+    # An open Stripe Checkout session: mount Stripe's embedded Checkout with
+    # `publishable_key` and `client_secret`, or send the buyer to `url`
+    # (hosted). Opening one credits nothing; Stripe's word does.
+    record Checkout, payment_id : Int64, session_id : String, client_secret : String?,
+      url : String?, publishable_key : String, expires_at : String?, replay : Bool
+    # status: open, settled, expired, failed, refunded or charged_back.
+    # `balance` is the buyer's balance of the asset once settled.
+    record CheckoutStatus, session_id : String, status : String, sku : String,
+      asset : String, quantity : Int64, amount_cents : Int64, currency : String,
+      transaction_id : Int64?, balance : Int64? do
+      def settled? : Bool
+        status == "settled"
+      end
+
+      def open? : Bool
+        status == "open"
+      end
+    end
+
     # Unsigned liveness probe — the one call needing no credentials.
     def health? : Bool
       HTTP::Client.get("#{@base_url}/health").success?
@@ -315,7 +340,9 @@ module AzookaBay
     end
 
     # Mint asset to a user. `kind` is "grant" (winnings, promos, comps) or
-    # "purchase" (issued for payment; reconciles against Stripe).
+    # "purchase" (issued for payment; reconciles against Stripe). A realm
+    # that sells through Azooka Bay (`checkout`) refuses "purchase" here:
+    # there only Stripe's word makes one.
     def issue(user_id : String, asset : String, amount : Int64, idempotency_key : String,
               kind : String = "grant", description : String? = nil,
               metadata : Hash(String, JSON::Any)? = nil) : Transaction
@@ -391,6 +418,38 @@ module AzookaBay
     # Merge-patch: each key is set to its value; an explicit null deletes it.
     def put_profile(user_id : String, entries : Hash(String, JSON::Any)) : JSON::Any
       put("/v1/profile", {"user_id" => user_id, "entries" => entries})
+    end
+
+    # The realm's SKUs this site may sell, cheapest first (server v0.9.0+).
+    def skus : Catalog
+      r = get("/v1/skus")
+      list = r["skus"].as_a.map do |k|
+        Sku.new(k["id"].as_s, k["name"].as_s, k["asset"].as_s, k["quantity"].as_i64, k["cents"].as_i64)
+      end
+      Catalog.new(r["realm"].as_s, r["publishable_key"].as_s, list)
+    end
+
+    # Opens a Stripe Checkout session for one SKU (server v0.9.0+). `ui` is
+    # "hosted" (send the buyer to `url`) or "embedded" (mount it in your page
+    # with `client_secret`). The idempotency key names the checkout: a retry
+    # under it returns the same session; a new purchase needs a new key.
+    def checkout(user_id : String, sku : String, idempotency_key : String,
+                 ui : String = "hosted") : Checkout
+      r = post("/v1/checkout", {"user_id" => user_id, "sku" => sku, "ui" => ui,
+                                "idempotency_key" => idempotency_key})
+      Checkout.new(r["payment_id"].as_i64, r["session_id"].as_s, r["client_secret"]?.try(&.as_s?),
+        r["url"]?.try(&.as_s?), r["publishable_key"].as_s, r["expires_at"]?.try(&.as_s?),
+        r["replay"]?.try(&.as_bool?) || false)
+    end
+
+    # How a checkout went, for the return page (server v0.9.0+): poll every
+    # couple of seconds while it's open. Asking is what credits it, if
+    # Stripe says it's paid and its webhook hasn't arrived yet.
+    def checkout_status(session_id : String) : CheckoutStatus
+      r = get("/v1/checkout?session_id=#{URI.encode_www_form(session_id)}")
+      CheckoutStatus.new(r["session_id"].as_s, r["status"].as_s, r["sku"].as_s, r["asset"].as_s,
+        r["quantity"].as_i64, r["amount_cents"].as_i64, r["currency"].as_s,
+        r["transaction_id"]?.try(&.as_i64?), r["balance"]?.try(&.as_i64?))
     end
 
     private def tx(r : JSON::Any) : Transaction

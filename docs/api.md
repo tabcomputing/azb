@@ -1,14 +1,14 @@
 # API reference
 
-All endpoints except `GET /health` require an AZB1 signature (see
-`protocol.md`). Requests and responses are JSON. Authentication failures
+All endpoints except `GET /health` and Stripe's webhook require an AZB1
+signature (see `protocol.md`). Requests and responses are JSON. Authentication failures
 are always an opaque `401 {"error":"unauthorized"}`; errors below are
 post-authentication. Malformed JSON bodies get `400 {"error":"bad_json"}`.
 
 ## Realm membership
 
 Every endpoint that names a user (`issue`, `spend`, `balance`,
-`valuables`, `profile`, `vault`, `user`) acts within the calling site's
+`valuables`, `profile`, `vault`, `user`, `checkout`) acts within the calling site's
 **realm**, and the user must be a **member** of that realm.
 - A user becomes a member at their first verified login through one of
   the realm's sites (`/v1/login/verify`).
@@ -44,7 +44,9 @@ site's own standing, so a deployment's `/health` can report what is
 only its own grants, never another's.
 
 → `200 {"site":"pirate-ship","key":"pirate-ship-20260726-b0c3",
-        "realm":"silicon-circus","capabilities":{"sct":["issue","spend"]}}`
+        "realm":"silicon-circus","capabilities":{"scc":["issue","spend"]}}`
+
+Permissions are `issue`, `spend`, `exchange` and `sell`.
 
 ## POST /v1/login/start
 
@@ -264,7 +266,7 @@ isn't rate-limited.
 Mint asset to a user. Requires `may_issue` on the asset.
 
 ```json
-{"user_id": "<uuid>", "asset": "sct", "amount": 20,
+{"user_id": "<uuid>", "asset": "scc", "amount": 20,
  "idempotency_key": "stripe_cs_123", "kind": "purchase",
  "description": "$5.00 -> 20 circus tokens", "metadata": {"stripe_session": "cs_123"}}
 ```
@@ -272,12 +274,18 @@ Mint asset to a user. Requires `may_issue` on the asset.
 `"grant"` (winnings, promos, bonuses; the default). Creates the user's
 account for the asset on first grant.
 
+In a realm that sells through Azooka Bay (a `stripe:` block in its realm
+file), purchases come only from Stripe's word (see Payments below), and
+`kind: "purchase"` here is refused with `403 purchase_via_checkout`.
+Grants are unaffected.
+
 → `200 {"transaction_id": 42, "balance": 20, "replay": false}`
 
 | Error | Status |
 |---|---|
 | `bad_user_id` / `bad_amount` / `bad_idempotency_key` / `bad_kind` | 400 |
 | `capability_denied` | 403 |
+| `purchase_via_checkout` | 403 |
 | `user_inactive` | 403 |
 | `unknown_user` | 404 |
 | `idempotency_conflict` | 409 |
@@ -288,7 +296,7 @@ account for the asset on first grant.
 One-call debit — the arcade path. Requires `may_spend`.
 
 ```json
-{"user_id": "<uuid>", "asset": "sct", "amount": 1,
+{"user_id": "<uuid>", "asset": "scc", "amount": 1,
  "idempotency_key": "play_9f3a", "description": "arcade play"}
 ```
 
@@ -333,7 +341,7 @@ realm, **balances only**. No `flows` aggregate and no `hold`, so it is
 flat regardless of ledger history: a handful of indexed rows. This is the
 arcade cabinet wallet.
 
-→ `200 {"user_id":"<uuid>","realm":"silicon-circus","balances":{"sct":22}}`
+→ `200 {"user_id":"<uuid>","realm":"silicon-circus","balances":{"scc":22}}`
 
 For the coin drop itself use **`/v1/spend`** — attempting the spend IS
 the balance check (race-free), and its response already carries the new
@@ -360,8 +368,8 @@ discount ladders are venue policy computed from
 ```json
 {"user_id": "<uuid>", "realm": "silicon-circus",
  "hold": null,
- "balances": {"sct": 25},
- "flows": {"sct": {"purchase": 20, "grant": 5, "spend": -1, "reversal": 1}}}
+ "balances": {"scc": 25},
+ "flows": {"scc": {"purchase": 20, "grant": 5, "spend": -1, "reversal": 1}}}
 ```
 
 | Error | Status |
@@ -492,6 +500,118 @@ in `users_transacting` for the first 30 days after upgrading.
 |---|---|
 | `rate_limited` | 429 |
 | `stats_unavailable` | 503 |
+
+## Payments: selling through Azooka Bay
+
+A realm sells through Azooka Bay when its realm file has a `stripe:` block
+and `skus:` (operations.md). A SKU is a bundle of one of the realm's
+assets at a price. A site holding `sell` on an asset may open Stripe
+Checkout sessions for the realm's SKUs of it. Azooka Bay opens the
+session with the realm's own Stripe key, and **only Stripe's word makes a
+purchase**: its signed webhook, or Azooka Bay reading the session back
+itself. The site never issues purchased coins and never touches a Stripe
+key.
+
+The flow:
+1. The shop page lists `GET /v1/skus`.
+2. The buyer picks one; the site's server calls `POST /v1/checkout`. For
+   `ui: "embedded"`, the page mounts Stripe's embedded Checkout with the
+   returned `publishable_key` and `client_secret`; for `ui: "hosted"`, it
+   sends the buyer to the returned `url`.
+3. Stripe sends the buyer back to the realm's `return_url`, with the
+   session id where the URL says `{CHECKOUT_SESSION_ID}`. The return page
+   asks `GET /v1/checkout?session_id=…` every couple of seconds until the
+   status is no longer `open`.
+4. The coins are credited once, whichever comes first: the webhook, or
+   that read. The browser coming back proves nothing by itself.
+
+### GET /v1/skus
+
+The realm's active SKUs of assets the calling site may sell, cheapest
+first, and the publishable key the page mounts Stripe's form with. A
+display read: not audited per hit.
+
+→ `200 {"realm":"silicon-circus","publishable_key":"pk_live_…",
+        "skus":[{"id":"coins-20","name":"20 Circus Coins","asset":"scc","quantity":20,"cents":500}]}`
+
+`404 not_selling`: the realm doesn't sell through Azooka Bay.
+
+### POST /v1/checkout
+
+```json
+{"user_id": "<uuid>", "sku": "coins-20", "ui": "embedded", "idempotency_key": "buy-7f3a"}
+```
+
+`ui`: `"embedded"` or `"hosted"` (the default). The user must be an active
+member. Name, price and quantity are the SKU's at that moment; a later
+price change doesn't touch an open checkout.
+
+→ `200 {"payment_id": 12, "session_id": "cs_live_…", "client_secret": "cs_live_…_secret_…",
+        "url": null, "publishable_key": "pk_live_…",
+        "expires_at": "2026-10-21T18:03:22Z", "replay": false}`
+
+`client_secret` is set for embedded checkouts, `url` for hosted ones. The
+same idempotency key returns the same session (`"replay": true`) while
+it's open, and finishes opening it if Stripe didn't answer the first time.
+Once it's closed (paid, expired, failed), the key answers
+`409 checkout_closed`: a new purchase takes a new key.
+
+| Error | Status |
+|---|---|
+| `bad_user_id` / `bad_idempotency_key` / `bad_ui` | 400 |
+| `capability_denied`: no `sell` on the SKU's asset | 403 |
+| `user_inactive` | 403 |
+| `unknown_sku` (not the realm's, or retired) / `unknown_user` / `not_selling` | 404 |
+| `checkout_closed` | 409 |
+| `idempotency_mismatch` | 422 |
+| `stripe_refused`: Stripe said no (`message` says why); this checkout is closed | 502 |
+| `stripe_unreachable`: no answer from Stripe; retry under the same key | 502 |
+| `payments_unavailable`: this server has no Stripe key for the realm | 503 |
+
+### GET /v1/checkout?session_id=<cs_…>
+
+Only the site that opened the checkout can see it.
+
+→ `200 {"session_id":"cs_live_…","status":"settled","sku":"coins-20","asset":"scc",
+        "quantity":20,"amount_cents":500,"currency":"usd","transaction_id":88,"balance":120}`
+
+`status`: `open`, `settled`, `expired`, `failed`, `refunded` or
+`charged_back`. While it's `open`, Azooka Bay asks Stripe itself (at most
+once every 2 seconds per checkout, however often the page asks), so a late
+webhook doesn't keep the buyer waiting. `balance` is the buyer's balance
+of the asset once settled. A display poll: not audited per hit (settling
+always is). Errors: `400 bad_session_id`, `404 unknown_checkout`.
+
+### Refunds and chargebacks
+
+When Stripe reports a full refund or a dispute, Azooka Bay takes back what
+the buyer still holds: the whole purchase reversed if they hold it all,
+otherwise everything they hold of the asset, as an adjustment. The rest
+is recorded on the payment as lost (spent before the money went back),
+and the status becomes `refunded` or `charged_back`. A partial refund
+changes no coins: it's audited for the operator to settle by hand.
+Azooka Bay doesn't suspend the buyer; that's the realm's policy (the
+operator's `member` command).
+
+A purchase made on Stripe's word is Azooka Bay's own transaction, not the
+site's: `POST /v1/reverse` can't undo it (`404 unknown_transaction`).
+
+### POST /v1/stripe/webhook/<account>
+
+Stripe's endpoint, not a site's: signed by Stripe (`Stripe-Signature`,
+HMAC-SHA256 under the endpoint's signing secret), not by AZB1. Setting it
+up is in operations.md.
+- An account this server has no signing secret for: `404`.
+- A bad signature, or one more than 5 minutes off: `400`.
+- Otherwise: `200 {"received":true,"outcome":"handled"}` (or `"ignored"`).
+
+The events it acts on are `checkout.session.completed`,
+`checkout.session.async_payment_succeeded`,
+`checkout.session.async_payment_failed`, `checkout.session.expired`,
+`charge.refunded` and `charge.dispute.created`. Every one is idempotent,
+since Stripe delivers at least once and in no promised order. Events for
+checkouts Azooka Bay didn't open (another integration's sales on the same
+account) are ignored.
 
 ## Vault — safe deposit boxes (`/v1/vault`)
 

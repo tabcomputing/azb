@@ -74,6 +74,11 @@ private def with_bay(&block : AzookaBay::Client, FakeBay -> Nil)
         {200, %({"user_id":"u-1","realm":"silicon-circus","balances":{"bones":25},"collectibles":[],"hold":null})}
       end
     when "/v1/site/login"   then {200, %({"changed":true})}
+    when "/v1/skus"         then {200, %({"realm":"silicon-circus","publishable_key":"pk_test_x","skus":[{"id":"coins-20","name":"20 Coins","asset":"scc","quantity":20,"cents":500}]})}
+    when "/v1/checkout"     then {200, %({"payment_id":7,"session_id":"cs_test_1","client_secret":"cs_test_1_secret","url":null,"publishable_key":"pk_test_x","expires_at":"2026-10-21T18:00:00Z","replay":false})}
+    when .starts_with?("/v1/checkout?session_id=")
+      {200, %({"session_id":"cs_test_1","status":"settled","sku":"coins-20","asset":"scc","quantity":20,"amount_cents":500,"currency":"usd","transaction_id":88,"balance":20})}
+    when "/v1/stripe-down"  then {502, %({"error":"stripe_unreachable","message":"no answer"})}
     when "/v1/bad-settings" then {400, %({"error":"invalid_login_settings","message":"digits codes must be 6-10 long"})}
     when "/v1/nope"         then {401, %({"error":"unauthorized"})}
     when "/v1/refused"      then {502, %({"error":"email_failed"})}
@@ -259,6 +264,25 @@ describe AzookaBay::Client do
       client.spend(user_id: "u-1", asset: "bones", amount: 1_i64,
                    idempotency_key: "k2").transaction_id.should eq 43
       client.valuables("u-1").balances["bones"].should eq 25
+    end
+  end
+
+  it "sells through Azooka Bay: SKUs, a checkout, and how it went" do
+    with_bay do |client, bay|
+      catalog = client.skus
+      catalog.publishable_key.should eq "pk_test_x"
+      catalog.skus.first.cents.should eq 500
+      opened = client.checkout("u-1", "coins-20", "buy-1", ui: "embedded")
+      bay.verified.should be_true
+      JSON.parse(bay.last_body.not_nil!).should eq JSON.parse(%({"user_id":"u-1","sku":"coins-20","ui":"embedded","idempotency_key":"buy-1"}))
+      opened.client_secret.should eq "cs_test_1_secret"
+      opened.url.should be_nil
+      status = client.checkout_status("cs_test_1")
+      bay.last_path.should eq "/v1/checkout?session_id=cs_test_1"
+      status.settled?.should be_true
+      status.balance.should eq 20
+      ex = expect_raises(AzookaBay::Client::Error) { client.post("/v1/stripe-down", {"x" => 1}) }
+      ex.retryable?.should be_true
     end
   end
 

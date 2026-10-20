@@ -71,6 +71,14 @@ azb.issue(user_id: login.user_id, asset: "bones", amount: 20,
 # the site's own login look (server v0.8.0+): push it on every deploy;
 # whole-set and idempotent, returns whether anything changed
 azb.set_login("code", code_style: "digits", code_length: 6, label: "code")
+
+# selling through Azooka Bay (server v0.9.0+): the site holds no Stripe key
+catalog = azb.skus                          # the realm's SKUs this site may sell
+co = azb.checkout(login.user_id, "coins-20", "buy-#{order_id}", ui: "embedded")
+# page: mount Stripe's embedded Checkout with co.publishable_key + co.client_secret
+# (or, for ui: "hosted", send the buyer to co.url)
+status = azb.checkout_status(session_id)   # on the return page; poll while open?
+status.settled?                            # credited once, on Stripe's word only
 ```
 
 ### A login file
