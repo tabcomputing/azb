@@ -551,6 +551,14 @@ sites members' addresses, and Stripe's page would). If the realm file sets
 `terms`, the buyer must tick a box beside those words before paying. A
 buyer has at most 5 checkouts live in a realm at once.
 
+`redirect` (embedded only): `"always"` (the default) or `"if_required"`.
+Stripe's embedded form sends the buyer on to the realm's `return_url` once
+they've paid. With `"if_required"` it does so only after a payment method
+that leaves the page (a bank's own site); otherwise the page carries on,
+and Stripe.js calls its `onComplete`, where the page asks
+`GET /v1/checkout` as a return page would. So a buyer mid-game isn't sent
+out of it. The return page is still needed, for the methods that leave.
+
 → `200 {"payment_id": 12, "session_id": "cs_live_…", "client_secret": "cs_live_…_secret_…",
         "url": null, "publishable_key": "pk_live_…",
         "expires_at": "2026-10-21T18:03:22Z", "replay": false}`
@@ -559,13 +567,15 @@ buyer has at most 5 checkouts live in a realm at once.
 same idempotency key returns the same session (`"replay": true`) while
 it's open, and finishes opening it if Stripe didn't answer the first time.
 Once it's closed (paid, expired, failed), the key answers
-`409 checkout_closed`: a new purchase takes a new key. A retry is checked
-like a new checkout: once the site's `sell` is revoked or the buyer is
-suspended, it's refused.
+`409 checkout_closed`: a new purchase takes a new key. A retry must ask
+for the same user, SKU, `ui` and `redirect` (`422 idempotency_mismatch`),
+and is checked like a new checkout: once the site's `sell` is revoked or
+the buyer is suspended, it's refused.
 
 | Error | Status |
 |---|---|
 | `bad_user_id` / `bad_idempotency_key` / `bad_ui` | 400 |
+| `bad_redirect`: not `always` or `if_required`, or `if_required` on a hosted checkout | 400 |
 | `capability_denied`: no `sell` on the SKU's asset | 403 |
 | `user_inactive` | 403 |
 | `unknown_sku` (not the realm's, or retired) / `unknown_user` / `not_selling` | 404 |
@@ -583,10 +593,13 @@ buyer is a member of its realm (`404 unknown_user` once they aren't).
 
 → `200 {"session_id":"cs_live_…","user_id":"<uuid>","status":"settled","sku":"coins-20",
         "asset":"scc","quantity":20,"amount_cents":500,"currency":"usd",
-        "transaction_id":88,"balance":120}`
+        "transaction_id":88,"balance":120,"settled_at":"2026-10-21T17:04:51Z"}`
 
 `user_id` is the buyer: a return page shows a purchase only to them (a
-session id in a URL can be someone else's).
+session id in a URL can be someone else's). `settled_at` is when Azooka Bay
+recorded the payment (and credited it), usually seconds after the buyer
+paid; it stays once the payment is refunded or charged back, and is null
+for one never settled.
 
 `status`:
 - `open`: Stripe's page is live. Azooka Bay asks Stripe itself (at most

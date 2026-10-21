@@ -246,9 +246,11 @@ module AzookaBay
     # offered: nothing credited), refunded or charged_back. `balance` is the
     # buyer's balance of the asset once settled. `user_id` is the buyer:
     # show a purchase only to them (a session id in a URL can be anyone's).
+    # `settled_at` (RFC 3339; server v0.9.1+) is when Azooka Bay recorded
+    # the payment, kept after a refund; nil if it never settled.
     record CheckoutStatus, session_id : String, user_id : String, status : String, sku : String,
       asset : String, quantity : Int64, amount_cents : Int64, currency : String,
-      transaction_id : Int64?, balance : Int64? do
+      transaction_id : Int64?, balance : Int64?, settled_at : String? = nil do
       def settled? : Bool
         status == "settled"
       end
@@ -436,10 +438,17 @@ module AzookaBay
     # "hosted" (send the buyer to `url`) or "embedded" (mount it in your page
     # with `client_secret`). The idempotency key names the checkout: a retry
     # under it returns the same session; a new purchase needs a new key.
+    #
+    # `redirect` (embedded only, server v0.9.1+): "always" sends the buyer
+    # to the realm's return page once paid; "if_required" only after a
+    # payment method that left the page, so a page can carry on in Stripe.js's
+    # `onComplete` and ask `checkout_status` itself. (An older server ignores
+    # it and always redirects.)
     def checkout(user_id : String, sku : String, idempotency_key : String,
-                 ui : String = "hosted") : Checkout
-      r = post("/v1/checkout", {"user_id" => user_id, "sku" => sku, "ui" => ui,
-                                "idempotency_key" => idempotency_key})
+                 ui : String = "hosted", redirect : String = "always") : Checkout
+      payload = {"user_id" => user_id, "sku" => sku, "ui" => ui, "idempotency_key" => idempotency_key}
+      payload["redirect"] = redirect unless redirect == "always"
+      r = post("/v1/checkout", payload)
       Checkout.new(r["payment_id"].as_i64, r["session_id"].as_s, r["client_secret"]?.try(&.as_s?),
         r["url"]?.try(&.as_s?), r["publishable_key"].as_s, r["expires_at"]?.try(&.as_s?),
         r["replay"]?.try(&.as_bool?) || false)
@@ -452,7 +461,7 @@ module AzookaBay
       r = get("/v1/checkout?session_id=#{URI.encode_www_form(session_id)}")
       CheckoutStatus.new(r["session_id"].as_s, r["user_id"].as_s, r["status"].as_s, r["sku"].as_s, r["asset"].as_s,
         r["quantity"].as_i64, r["amount_cents"].as_i64, r["currency"].as_s,
-        r["transaction_id"]?.try(&.as_i64?), r["balance"]?.try(&.as_i64?))
+        r["transaction_id"]?.try(&.as_i64?), r["balance"]?.try(&.as_i64?), r["settled_at"]?.try(&.as_s?))
     end
 
     private def tx(r : JSON::Any) : Transaction

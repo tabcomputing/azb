@@ -76,10 +76,13 @@ azb.set_login("code", code_style: "digits", code_length: 6, label: "code")
 catalog = azb.skus                          # the realm's SKUs this site may sell
 co = azb.checkout(login.user_id, "coins-20", "buy-#{order_id}", ui: "embedded")
 # page: mount Stripe's embedded Checkout with co.publishable_key + co.client_secret
-# (or, for ui: "hosted", send the buyer to co.url)
+# (or, for ui: "hosted", send the buyer to co.url). redirect: "if_required"
+# (server v0.9.1+) keeps a card payment in the page: Stripe.js's onComplete
+# instead of the return page, which only methods that leave the page use
 status = azb.checkout_status(session_id)   # on the return page; poll while open?
 status.user_id == login.user_id            # show it only to its buyer
 status.settled?                            # credited once, on Stripe's word only
+status.settled_at                          # when (server v0.9.1+)
 ```
 
 ### A login file
