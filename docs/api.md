@@ -41,10 +41,12 @@ Unsigned liveness probe. → `200 {"ok":true}`
 Signed no-op proving the full authentication path — and the calling
 site's own standing, so a deployment's `/health` can report what is
 *wired* (grants in place) rather than merely configured. A site sees
-only its own grants, never another's.
+only its own grants, never another's. `version` is the running Azooka
+Bay's (since v0.9.2), so a deploy can confirm what it put in place.
 
 → `200 {"site":"pirate-ship","key":"pirate-ship-20260726-b0c3",
-        "realm":"silicon-circus","capabilities":{"scc":["issue","spend"]}}`
+        "realm":"silicon-circus","capabilities":{"scc":["issue","spend"]},
+        "version":"0.9.2"}`
 
 Permissions are `issue`, `spend`, `exchange` and `sell`.
 
