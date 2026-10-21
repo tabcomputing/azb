@@ -92,8 +92,10 @@ module AzookaBay
 
     # Is the claimed timestamp within the accepted skew window of now?
     # Pure function of its inputs; the middleware passes the real clock.
+    # Compared against a window, never subtracted: the timestamp is the
+    # caller's claim, and now - timestamp overflows near Int64's limits.
     def self.fresh?(timestamp : Int64, now : Int64, max_skew : Int32 = MAX_CLOCK_SKEW) : Bool
-      (now - timestamp).abs <= max_skew
+      (now - max_skew..now + max_skew).includes?(timestamp)
     end
 
     # Client helper: a fresh single-use nonce.

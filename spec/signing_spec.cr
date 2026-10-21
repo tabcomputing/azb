@@ -73,6 +73,8 @@ describe AzookaBay::Signing do
     AzookaBay::Signing.fresh?(now + skew, now).should be_true
     AzookaBay::Signing.fresh?(now - skew - 1, now).should be_false
     AzookaBay::Signing.fresh?(now + skew + 1, now).should be_false
+    AzookaBay::Signing.fresh?(Int64::MIN, now).should be_false # no overflow
+    AzookaBay::Signing.fresh?(Int64::MAX, now).should be_false
   end
 
   it "generates unique, token-safe nonces" do

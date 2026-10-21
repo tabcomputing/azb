@@ -578,7 +578,8 @@ suspended, it's refused.
 
 ### GET /v1/checkout?session_id=<cs_…>
 
-Only the site that opened the checkout can see it.
+Only the site that opened the checkout can see it, and only while the
+buyer is a member of its realm (`404 unknown_user` once they aren't).
 
 → `200 {"session_id":"cs_live_…","user_id":"<uuid>","status":"settled","sku":"coins-20",
         "asset":"scc","quantity":20,"amount_cents":500,"currency":"usd",
