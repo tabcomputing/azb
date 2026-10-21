@@ -547,8 +547,9 @@ display read: not audited per hit.
 member. Name, price and quantity are the SKU's at that moment; a later
 price change doesn't touch an open checkout. Stripe's page takes a payment
 for an hour; the buyer types their email there (Azooka Bay doesn't tell
-sites members' addresses, and Stripe's page would). A buyer has at most 5
-checkouts live in a realm at once.
+sites members' addresses, and Stripe's page would). If the realm file sets
+`terms`, the buyer must tick a box beside those words before paying. A
+buyer has at most 5 checkouts live in a realm at once.
 
 → `200 {"payment_id": 12, "session_id": "cs_live_…", "client_secret": "cs_live_…_secret_…",
         "url": null, "publishable_key": "pk_live_…",
