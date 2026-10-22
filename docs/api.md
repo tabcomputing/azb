@@ -26,9 +26,17 @@ Every endpoint that names a user (`issue`, `spend`, `balance`,
 Every mutating call takes a caller-chosen `idempotency_key` (printable
 ASCII, 1–128 chars), scoped per site. Retrying the same key returns the
 **original** result with `"replay": true` — a timed-out call is always
-safe to retry. Reusing a key with *different* parameters is a client bug
+safe to retry, and a retry of one that committed gets that answer even
+if the site's capability or the user's standing has changed since.
+Reusing a key with *different* parameters is a client bug
 and gets a loud `422 {"error":"idempotency_mismatch"}`, never a silent
 wrong answer.
+
+A write and its audit row commit together: a write the audit log can't
+record isn't made. A `500` doesn't say whether anything was written (a
+checkout's row exists before Stripe is asked; a replay's answer can fail
+after the original committed), so retry under the same key, which
+answers with the original result.
 
 ---
 
@@ -70,8 +78,8 @@ login-capable site needs a link landing page, code-only sites included.
 ```json
 {"email": "tom@example.com", "redirect_path": "/midway", "request_ip": "203.0.113.9"}
 ```
-`redirect_path` and `request_ip` (the end user's IP as seen by the site)
-are optional.
+`redirect_path` and `request_ip` (the end user's IP as seen by the site:
+one IPv4 or IPv6 address, no port, no list) are optional.
 
 → `202 {"ok":true}` — **always**, whether the address has an account,
 is new, or is rate-limited (3 sends per email per site per 15 min,
@@ -79,7 +87,8 @@ silently). No enumeration oracle. The user record is *not* created here.
 
 | Error | Status | Meaning |
 |---|---|---|
-| `bad_email` | 400 | not an email address |
+| `bad_email` | 400 | not an email address: one `local@domain`, ASCII, no display name, quotes or list, at most 254 characters |
+| `bad_request_ip` | 400 | not one IP address |
 | `bad_redirect_path` | 400 | must start with `/`, no whitespace, and not `//`/`/\\` (protocol-relative open-redirect guard) |
 | `login_not_configured` | 500 | a link-capable site has no `link_base_url`, a code-capable site has no code style, or no From resolves (site override and realm default both empty) |
 | `email_failed` | 502 | mail provider refused; retry later |
@@ -274,7 +283,8 @@ Mint asset to a user. Requires `may_issue` on the asset.
 ```
 `kind`: `"purchase"` (issued for payment — reconciles against Stripe) or
 `"grant"` (winnings, promos, bonuses; the default). Creates the user's
-account for the asset on first grant.
+account for the asset on first grant. `amount`: 1 to 1,000,000,000 (for
+spend too).
 
 In a realm that sells through Azooka Bay (a `stripe:` block in its realm
 file), purchases come only from Stripe's word (see Payments below), and
@@ -286,11 +296,13 @@ Grants are unaffected.
 | Error | Status |
 |---|---|
 | `bad_user_id` / `bad_amount` / `bad_idempotency_key` / `bad_kind` | 400 |
-| `capability_denied` | 403 |
+| `bad_description` (over 500 characters, or a NUL) / `bad_metadata` (over 4 KiB as JSON, or a NUL anywhere in it) | 400 |
+| `capability_denied` (also: an `asset` that isn't an asset code at all) | 403 |
 | `purchase_via_checkout` | 403 |
 | `user_inactive` | 403 |
 | `unknown_user` | 404 |
 | `idempotency_conflict` | 409 |
+| `issuance_exhausted` (the asset has issued all its books can count) | 409 |
 | `idempotency_mismatch` | 422 |
 
 ## POST /v1/spend
@@ -304,7 +316,8 @@ One-call debit — the arcade path. Requires `may_spend`.
 
 → `200 {"transaction_id": 43, "balance": 19, "replay": false}`
 
-Errors as for issue, minus `bad_kind`, plus:
+Errors as for issue, minus `bad_kind`, `purchase_via_checkout` and
+`issuance_exhausted`, plus:
 
 | Error | Status |
 |---|---|
@@ -330,6 +343,7 @@ authority implies reversal authority, nothing wider.
 | Error | Status | Meaning |
 |---|---|---|
 | `bad_idempotency_key` | 400 | |
+| `bad_reason` | 400 | over 500 characters, or a NUL |
 | `unknown_transaction` | 404 | nonexistent **or another site's** — deliberately indistinguishable |
 | `already_reversed` | 409 | nothing may be reversed twice |
 | `insufficient_balance` | 409 | e.g. reversing an issue the user already spent |
@@ -447,7 +461,7 @@ The audit log records which keys changed, never the values.
 
 | Error | Status |
 |---|---|
-| `bad_user_id` / `bad_key` / `no_entries` / `too_many_keys` | 400 |
+| `bad_user_id` / `bad_key` / `no_entries` / `too_many_keys` / `bad_value` (a NUL anywhere in a value) | 400 |
 | `user_inactive` | 403 (writes need an active user; reads do not) |
 | `unknown_user` | 404 |
 
@@ -584,9 +598,9 @@ the buyer is suspended, it's refused.
 | `checkout_closed` | 409 |
 | `idempotency_mismatch` | 422 |
 | `too_many_checkouts`: the buyer has 5 live already | 429 |
-| `stripe_refused`: Stripe said no (the server's log says why); this checkout is closed | 502 |
+| `stripe_refused`: Stripe said no, or failed in a way it repeats to every retry (the server's log says why); this checkout is closed | 502 |
 | `stripe_unreachable`: no answer from Stripe; retry under the same key | 502 |
-| `payments_unavailable`: this server has no Stripe key for the realm | 503 |
+| `payments_unavailable`: this server has no Stripe key for the realm, or no webhook secret for its Stripe account; or, on a retry, Stripe refused to read the checkout back, which may still be open: retry later, don't open another | 503 |
 
 ### GET /v1/checkout?session_id=<cs_…>
 
