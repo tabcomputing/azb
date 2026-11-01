@@ -84,11 +84,16 @@ status.user_id == login.user_id            # show it only to its buyer
 status.settled?                            # credited once, on Stripe's word only
 status.settled_at                          # when (server v0.9.1+)
 
-# the payments feed (server v0.11.0+): every few minutes, from where you left
-# off, so a refund or chargeback weeks later is heard without re-asking
-feed = azb.payments(after: last_seq)
-feed.changes.each { |c| revoke(c.user_id, c.sku) if c.status.in?("refunded", "charged_back") }
-last_seq = feed.next                        # keep it; ask again at once while feed.more
+# a refund, chargeback or late bank debit, heard when you act, never on a
+# timer: keep co.session_id from the checkout, and at the member's login
+# (and before granting what the payment paid for) ask again. Coins need
+# none of this; Azooka Bay takes them back itself.
+paid = azb.checkout_status(membership_session_id)
+paid.status.in?("settled", "reinstated")    # still stands; refunded/charged_back don't
+
+# the payments feed (server v0.11.0+): a catch-up read of your payment
+# changes in order (starting your own records, after an outage), not a timer
+feed = azb.payments(after: last_seq)        # feed.changes, feed.next, feed.more
 ```
 
 ### A login file

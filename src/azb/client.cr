@@ -481,10 +481,11 @@ module AzookaBay
     end
 
     # The payments feed (server v0.11.0+): this site's payment changes
-    # after `after`, in order, so a refund or chargeback weeks later is
-    # heard without asking after every checkout. Keep the `next` it gives
-    # and sweep from it every few minutes; while `more`, ask again at once.
-    # Each change is in it once, and none is skipped. `limit`: 1 to 500.
+    # after `after`, in order, each once, none skipped. A catch-up read
+    # (when you start keeping your own record of sales, after an outage,
+    # to reconcile), not one to check on a timer: to hear of a refund,
+    # ask `checkout_status` at the member's login. While `more`, ask again
+    # after `next` for the rest. `limit`: 1 to 500.
     def payments(after : Int64 = 0_i64, limit : Int32 = 100) : PaymentChanges
       r = get("/v1/payments?after=#{after}&limit=#{limit}")
       list = r["payments"].as_a.map do |e|
