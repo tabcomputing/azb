@@ -243,8 +243,9 @@ module AzookaBay
       url : String?, publishable_key : String, expires_at : String?, replay : Bool
     # status: open, processing (a bank debit clearing: the coins come when
     # it does), settled, expired, failed, mismatched (paid, not what was
-    # offered: nothing credited), refunded or charged_back. `balance` is the
-    # buyer's balance of the asset once settled. `user_id` is the buyer:
+    # offered: nothing credited), refunded, charged_back or reinstated (a
+    # dispute won and its coins restored; server v0.11.0+). `balance` is the
+    # buyer's balance of the asset once settled or reinstated. `user_id` is the buyer:
     # show a purchase only to them (a session id in a URL can be anyone's).
     # `settled_at` (RFC 3339; server v0.9.1+) is when Azooka Bay recorded
     # the payment, kept after a refund; nil if it never settled.
