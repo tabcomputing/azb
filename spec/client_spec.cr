@@ -78,6 +78,8 @@ private def with_bay(&block : AzookaBay::Client, FakeBay -> Nil)
     when "/v1/checkout"     then {200, %({"payment_id":7,"session_id":"cs_test_1","client_secret":"cs_test_1_secret","url":null,"publishable_key":"pk_test_x","expires_at":"2026-10-21T18:00:00Z","replay":false})}
     when .starts_with?("/v1/checkout?session_id=")
       {200, %({"session_id":"cs_test_1","user_id":"u-1","status":"settled","sku":"coins-20","asset":"scc","quantity":20,"amount_cents":500,"currency":"usd","transaction_id":88,"balance":20,"settled_at":"2026-10-21T17:04:51Z"})}
+    when .starts_with?("/v1/payments?")
+      {200, %({"payments":[{"seq":7,"payment_id":12,"session_id":"cs_test_1","user_id":"u-1","status":"refunded","sku":"coins-20","asset":"scc","quantity":20,"amount_cents":500,"currency":"usd","transaction_id":88,"at":"2026-11-14T09:12:40Z"},{"seq":8,"payment_id":13,"session_id":null,"user_id":"u-1","status":"failed","sku":"coins-20","asset":"scc","quantity":20,"amount_cents":500,"currency":"usd","transaction_id":null,"at":"2026-11-14T09:13:00Z"}],"next":8,"more":true})}
     when "/v1/stripe-down"  then {502, %({"error":"stripe_unreachable","message":"no answer"})}
     when "/v1/bad-settings" then {400, %({"error":"invalid_login_settings","message":"digits codes must be 6-10 long"})}
     when "/v1/nope"         then {401, %({"error":"unauthorized"})}
@@ -287,6 +289,19 @@ describe AzookaBay::Client do
       status.user_id.should eq "u-1"
       status.balance.should eq 20
       status.settled_at.should eq "2026-10-21T17:04:51Z"
+      # the payments feed, from where the site left off
+      feed = client.payments(after: 6_i64)
+      bay.last_path.should eq "/v1/payments?after=6&limit=100"
+      bay.verified.should be_true
+      feed.next.should eq 8
+      feed.more.should be_true
+      feed.changes.map(&.status).should eq ["refunded", "failed"]
+      feed.changes[0].transaction_id.should eq 88
+      feed.changes[0].at.should eq "2026-11-14T09:12:40Z"
+      feed.changes[1].session_id.should be_nil
+      feed.changes[1].transaction_id.should be_nil
+      client.payments.next.should eq 8
+      bay.last_path.should eq "/v1/payments?after=0&limit=100"
       # finishing in the page: asked for only when it isn't the default
       client.checkout("u-1", "coins-20", "buy-2", ui: "embedded", redirect: "if_required")
       JSON.parse(bay.last_body.not_nil!)["redirect"].should eq "if_required"

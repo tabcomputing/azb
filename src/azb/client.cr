@@ -260,6 +260,17 @@ module AzookaBay
         status == "open"
       end
     end
+    # One entry of the payments feed (server v0.11.0+): what a payment
+    # became (`status`, as for CheckoutStatus) and when (`at`, RFC 3339),
+    # with the payment's own facts. `session_id` is nil for a checkout
+    # Stripe refused to open, `transaction_id` (the purchase) until it
+    # settled.
+    record PaymentChange, seq : Int64, payment_id : Int64, session_id : String?, user_id : String,
+      status : String, sku : String, asset : String, quantity : Int64, amount_cents : Int64,
+      currency : String, transaction_id : Int64?, at : String
+    # A page of the feed. Keep `next` and ask after it next time; `more`:
+    # there may be more now, so ask again at once.
+    record PaymentChanges, changes : Array(PaymentChange), next : Int64, more : Bool
 
     # Unsigned liveness probe — the one call needing no credentials.
     def health? : Bool
@@ -467,6 +478,21 @@ module AzookaBay
       CheckoutStatus.new(r["session_id"].as_s, r["user_id"].as_s, r["status"].as_s, r["sku"].as_s, r["asset"].as_s,
         r["quantity"].as_i64, r["amount_cents"].as_i64, r["currency"].as_s,
         r["transaction_id"]?.try(&.as_i64?), r["balance"]?.try(&.as_i64?), r["settled_at"]?.try(&.as_s?))
+    end
+
+    # The payments feed (server v0.11.0+): this site's payment changes
+    # after `after`, in order, so a refund or chargeback weeks later is
+    # heard without asking after every checkout. Keep the `next` it gives
+    # and sweep from it every few minutes; while `more`, ask again at once.
+    # Each change is in it once, and none is skipped. `limit`: 1 to 500.
+    def payments(after : Int64 = 0_i64, limit : Int32 = 100) : PaymentChanges
+      r = get("/v1/payments?after=#{after}&limit=#{limit}")
+      list = r["payments"].as_a.map do |e|
+        PaymentChange.new(e["seq"].as_i64, e["payment_id"].as_i64, e["session_id"]?.try(&.as_s?),
+          e["user_id"].as_s, e["status"].as_s, e["sku"].as_s, e["asset"].as_s, e["quantity"].as_i64,
+          e["amount_cents"].as_i64, e["currency"].as_s, e["transaction_id"]?.try(&.as_i64?), e["at"].as_s)
+      end
+      PaymentChanges.new(list, r["next"].as_i64, r["more"]?.try(&.as_bool?) || false)
     end
 
     private def tx(r : JSON::Any) : Transaction

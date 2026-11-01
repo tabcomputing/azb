@@ -83,6 +83,12 @@ status = azb.checkout_status(session_id)   # on the return page; poll while open
 status.user_id == login.user_id            # show it only to its buyer
 status.settled?                            # credited once, on Stripe's word only
 status.settled_at                          # when (server v0.9.1+)
+
+# the payments feed (server v0.11.0+): every few minutes, from where you left
+# off, so a refund or chargeback weeks later is heard without re-asking
+feed = azb.payments(after: last_seq)
+feed.changes.each { |c| revoke(c.user_id, c.sku) if c.status.in?("refunded", "charged_back") }
+last_seq = feed.next                        # keep it; ask again at once while feed.more
 ```
 
 ### A login file
