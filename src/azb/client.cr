@@ -359,11 +359,15 @@ module AzookaBay
       tx(post("/v1/issue", payload))
     end
 
+    # sku: what the spend bought, an id written as a SKU's is (a-z, 0-9,
+    # '-' or '_'), kept on the transaction (server v0.11.0+; an older server
+    # ignores it). Part of what a retry under the same key must match.
     def spend(user_id : String, asset : String, amount : Int64, idempotency_key : String,
-              description : String? = nil) : Transaction
-      payload = {"user_id" => user_id, "asset" => asset, "amount" => amount,
-                 "idempotency_key" => idempotency_key}
-      payload = payload.merge({"description" => description}) if description
+              description : String? = nil, sku : String? = nil) : Transaction
+      payload = {"user_id" => JSON::Any.new(user_id), "asset" => JSON::Any.new(asset),
+                 "amount" => JSON::Any.new(amount), "idempotency_key" => JSON::Any.new(idempotency_key)}
+      payload["sku"] = JSON::Any.new(sku) if sku
+      payload["description"] = JSON::Any.new(description) if description
       tx(post("/v1/spend", payload))
     end
 

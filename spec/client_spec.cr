@@ -248,7 +248,7 @@ describe AzookaBay::Client do
   end
 
   it "returns typed results" do
-    with_bay do |client, _|
+    with_bay do |client, bay|
       login = client.login_verify("tok")
       login.user_id.should eq "u-1"
       login.redirect_path.should eq "/midway"
@@ -263,6 +263,10 @@ describe AzookaBay::Client do
                    idempotency_key: "k1").balance.should eq 20
       client.spend(user_id: "u-1", asset: "bones", amount: 1_i64,
                    idempotency_key: "k2").transaction_id.should eq 43
+      JSON.parse(bay.last_body.not_nil!).as_h.has_key?("sku").should be_false
+      client.spend(user_id: "u-1", asset: "bones", amount: 1_i64,
+                   idempotency_key: "k3", sku: "skee-ball")
+      JSON.parse(bay.last_body.not_nil!)["sku"].should eq "skee-ball"
       client.valuables("u-1").balances["bones"].should eq 25
     end
   end
