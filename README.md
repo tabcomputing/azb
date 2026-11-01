@@ -79,21 +79,22 @@ co = azb.checkout(login.user_id, "coins-20", "buy-#{order_id}", ui: "embedded")
 # (or, for ui: "hosted", send the buyer to co.url). redirect: "if_required"
 # (server v0.9.1+) keeps a card payment in the page: Stripe.js's onComplete
 # instead of the return page, which only methods that leave the page use
-status = azb.checkout_status(session_id)   # on the return page; poll while open?
+status = azb.checkout_status(session_id)   # on the return page, once (never on a timer)
+status.open?                               # not confirmed yet: say so, offer "check again"
 status.user_id == login.user_id            # show it only to its buyer
 status.settled?                            # credited once, on Stripe's word only
 status.settled_at                          # when (server v0.9.1+)
 
-# a refund, chargeback or late bank debit, heard when you act, never on a
-# timer: keep co.session_id from the checkout, and at the member's login
-# (and before granting what the payment paid for) ask again. Coins need
-# none of this; Azooka Bay takes them back itself.
+# a refund, chargeback or late bank debit, if you gave anything beyond
+# coins for the payment: keep co.session_id from the checkout, and at the
+# member's login (and before granting what the payment paid for) ask
+# again. Coins need none of this; Azooka Bay takes them back itself.
 paid = azb.checkout_status(membership_session_id)
 paid.status.in?("settled", "reinstated")    # still stands; refunded/charged_back don't
 
-# the payments feed (server v0.11.0+): a catch-up read of your payment
-# changes in order (starting your own records, after an outage), not a timer
-feed = azb.payments(after: last_seq)        # feed.changes, feed.next, feed.more
+# and once a day, the payments feed (server v0.11.0+) from where you left
+# off, so nothing goes unheard past a day; never more often
+feed = azb.payments(after: last_seq)        # act on feed.changes; keep feed.next; again while feed.more
 ```
 
 ### A login file

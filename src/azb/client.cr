@@ -470,9 +470,13 @@ module AzookaBay
         r["replay"]?.try(&.as_bool?) || false)
     end
 
-    # How a checkout went, for the return page (server v0.9.0+): poll every
-    # couple of seconds while it's open. Asking is what credits it, if
-    # Stripe says it's paid and its webhook hasn't arrived yet.
+    # How a checkout went (server v0.9.0+). The return page asks once, not
+    # on a timer: Stripe sends the buyer back only when the checkout is
+    # finished, and asking has Azooka Bay check with Stripe if its webhook
+    # hasn't arrived yet, crediting the payment then. Still `open?`: say
+    # it's being confirmed and offer to check again. A site that gave
+    # something beyond coins asks again at the member's login, to hear of
+    # a refund or chargeback.
     def checkout_status(session_id : String) : CheckoutStatus
       r = get("/v1/checkout?session_id=#{URI.encode_www_form(session_id)}")
       CheckoutStatus.new(r["session_id"].as_s, r["user_id"].as_s, r["status"].as_s, r["sku"].as_s, r["asset"].as_s,
@@ -481,11 +485,13 @@ module AzookaBay
     end
 
     # The payments feed (server v0.11.0+): this site's payment changes
-    # after `after`, in order, each once, none skipped. A catch-up read
-    # (when you start keeping your own record of sales, after an outage,
-    # to reconcile), not one to check on a timer: to hear of a refund,
-    # ask `checkout_status` at the member's login. While `more`, ask again
-    # after `next` for the rest. `limit`: 1 to 500.
+    # after `after`, in order, each once, none skipped. A site that gave
+    # something beyond coins for a payment reads it once a day from the
+    # last `next` it kept (and asks `checkout_status` at the member's
+    # login), so nothing goes unheard past a day; otherwise it's a
+    # catch-up read (starting your own record of sales, after an outage).
+    # Never more often than daily. While `more`, ask again after `next`
+    # for the rest. `limit`: 1 to 500.
     def payments(after : Int64 = 0_i64, limit : Int32 = 100) : PaymentChanges
       r = get("/v1/payments?after=#{after}&limit=#{limit}")
       list = r["payments"].as_a.map do |e|
