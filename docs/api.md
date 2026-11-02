@@ -91,7 +91,7 @@ silently). No enumeration oracle. The user record is *not* created here.
 | `bad_request_ip` | 400 | not one IP address |
 | `bad_redirect_path` | 400 | must start with `/`, no whitespace, and not `//`/`/\\` (protocol-relative open-redirect guard) |
 | `login_not_configured` | 500 | a link-capable site has no `link_base_url`, a code-capable site has no code style, or no From resolves (site override and realm default both empty) |
-| `email_failed` | 502 | mail provider refused; retry later |
+| `email_failed` | 502 | mail provider refused; retry later (a refused send doesn't count against the address's rate limit) |
 | `login_codes_unavailable` | 503 | the site uses typed codes and the server has no `AZB_LOGIN_CODE_KEY` |
 
 The emailed link is `<site.link_base_url>?token=<token>`, valid 15
@@ -282,7 +282,9 @@ Mint asset to a user. Requires `may_issue` on the asset.
  "description": "$5.00 -> 20 circus tokens", "metadata": {"stripe_session": "cs_123"}}
 ```
 `kind`: `"purchase"` (issued for payment — reconciles against Stripe) or
-`"grant"` (winnings, promos, bonuses; the default). Creates the user's
+`"grant"` (winnings, promos, bonuses; the default). The books keep the two
+apart (since v0.11.0): a grant draws on the granting site's gift account,
+a purchase on the asset's issuance account. Creates the user's
 account for the asset on first grant. `amount`: 1 to 1,000,000,000 (for
 spend too).
 
@@ -311,8 +313,17 @@ One-call debit — the arcade path. Requires `may_spend`.
 
 ```json
 {"user_id": "<uuid>", "asset": "scc", "amount": 1,
- "idempotency_key": "play_9f3a", "description": "arcade play"}
+ "idempotency_key": "play_9f3a", "sku": "skee-ball", "description": "arcade play"}
 ```
+
+`sku` (optional, since v0.11.0): what the spend bought, in the site's
+word, written as a SKU id is (1–63 characters: `a-z`, `0-9`, `-` or `_`,
+starting with a letter or digit). Azooka Bay checks it against no list;
+it keeps it on the transaction, a field of its own rather than a note in
+`metadata`, so what members spend on can be counted. Leave it out for a
+spend with no one thing behind it (metered use, say). It is part of the
+request a replay must match: the same key with another `sku`, or with
+one where the original had none, is `422 idempotency_mismatch`.
 
 → `200 {"transaction_id": 43, "balance": 19, "replay": false}`
 
@@ -321,6 +332,7 @@ Errors as for issue, minus `bad_kind`, `purchase_via_checkout` and
 
 | Error | Status |
 |---|---|
+| `bad_sku` | 400 |
 | `insufficient_balance` | 409 |
 
 ## POST /v1/reverse
@@ -536,9 +548,10 @@ The flow:
    sends the buyer to the returned `url`.
 3. Stripe sends the buyer back to the realm's `return_url`, with the
    session id where the URL says `{CHECKOUT_SESSION_ID}`. The return page
-   asks `GET /v1/checkout?session_id=…` every couple of seconds until the
-   status is no longer `open`, and checks the `user_id` is the signed-in
-   buyer's.
+   asks `GET /v1/checkout?session_id=…` **once**, and checks the `user_id`
+   is the signed-in buyer's. One ask has the answer: Stripe sends the
+   buyer back only once the checkout is finished, and if its webhook
+   hasn't arrived, Azooka Bay asks Stripe itself. Don't ask on a timer.
 4. The coins are credited once, whichever comes first: the webhook, or
    that read. The browser coming back proves nothing by itself.
 
@@ -618,25 +631,76 @@ paid; it stays once the payment is refunded or charged back, and is null
 for one never settled.
 
 `status`:
-- `open`: Stripe's page is live. Azooka Bay asks Stripe itself (at most
-  once every 2 seconds per checkout, however often the page asks), so a
-  late webhook doesn't keep the buyer waiting.
+- `open`: not finished, as far as Stripe has said. Asking about an open
+  checkout has Azooka Bay ask Stripe itself (at most once every 2 seconds
+  per checkout), so a late webhook doesn't keep the buyer waiting. A
+  return page that still gets `open` (Stripe didn't answer, or the buyer
+  came back without paying) says the payment is still being confirmed
+  and offers a button to check again; otherwise the site hears at the
+  member's next login (below, "Hearing of it later").
 - `processing`: paid by a method that takes days to clear (a bank debit).
-  The coins come when Stripe says it cleared; the page can stop asking.
+  The coins come when Stripe says it cleared; the page says so, and the
+  site hears of it later, as for a refund.
 - `settled`: paid and credited. `balance` is the buyer's balance of the
   asset.
 - `expired`, `failed`: never paid.
 - `mismatched`: paid, but not what was offered; nothing was credited, and
   it's the operator's to look into.
 - `refunded`, `charged_back`: paid, then the money went back.
+- `reinstated` (since v0.11.0): charged back, then the dispute was won and
+  the money came back, and so did the coins. `balance` as for `settled`.
 
-A display poll: not audited per hit (settling always is). Errors:
+A display read: not audited per hit (settling always is). Errors:
 `400 bad_session_id`, `404 unknown_checkout`.
+
+### GET /v1/payments?after=<seq>&limit=<n>
+
+The payments feed (since v0.11.0): the calling site's payment changes,
+in the order they happened. It's for reading back a stretch of history at
+once: when a site starts keeping its own record of sales, after an outage
+of its own, or to reconcile. A site that gave something beyond coins also
+reads it **once a day** from where it left off, and asks about a payment
+when it acts on it (below, "Hearing of it later"). Not more often: it's
+not for checking on a timer.
+
+`after`: the last `seq` the site has; 0, or left out, for the start.
+`limit`: 1 to 500 entries, 100 if left out.
+
+→ `200 {"payments":[{"seq":1794647560431,"payment_id":12,"session_id":"cs_live_…","user_id":"<uuid>",
+         "status":"refunded","sku":"coins-20","asset":"scc","quantity":20,
+         "amount_cents":500,"currency":"usd","transaction_id":88,
+         "at":"2026-11-14T09:12:40Z"}],
+        "next":1794647560431,"more":false}`
+
+- An entry for every change of a payment's status but the opening (the
+  site's own `POST /v1/checkout` answered that): `processing`, `settled`,
+  `expired`, `failed`, `mismatched`, `refunded`, `charged_back`,
+  `reinstated`, as for `GET /v1/checkout`. A payment can have several
+  (`settled`, then `charged_back`, then `reinstated`); `status` and `at`
+  are the change's, the rest the payment's.
+- Each entry is written in the same transaction as the change it
+  reports, and a site's entries are numbered in the order they're made,
+  each `seq` higher than the last but not by one: it's near the time in
+  milliseconds, so it stays ahead even of numbers handed out before a
+  restore from backup. So asking after `next` never misses one or sees
+  one twice. Keep `seq` as a 64-bit integer (it fits a JavaScript
+  number).
+- `session_id` is null for a checkout Stripe refused to open;
+  `transaction_id` (the purchase) is null until it settled.
+- `next`: the `seq` to ask after next time. `more: true`: there may be
+  more, so ask again at once for the rest.
+- Only the site's own payments, and only while the buyer is a member of
+  the realm (as for `GET /v1/checkout`); an entry about one who isn't is
+  left out, and `next` still moves past it.
+- Changes before v0.11.0 aren't in it.
+
+Not audited per hit (each change was, as it happened). Errors:
+`400 bad_after`, `400 bad_limit`.
 
 ### Refunds and chargebacks
 
-When Stripe reports a full refund or a dispute, Azooka Bay takes back what
-the buyer still holds: the whole purchase reversed if they hold it all,
+When Stripe reports a full refund, or takes a dispute's funds, Azooka Bay
+takes back what the buyer still holds: the whole purchase reversed if they hold it all,
 otherwise everything they hold of the asset, as an adjustment. The rest
 is recorded on the payment as lost (spent before the money went back),
 and the status becomes `refunded` or `charged_back`. A partial refund
@@ -644,10 +708,45 @@ changes no coins: it's audited for the operator to settle by hand. A
 refund Stripe reports before the payment itself (events come in no set
 order) is handled the same: the payment is credited first, then taken back.
 Azooka Bay doesn't suspend the buyer; that's the realm's policy (the
-operator's `member` command).
+operator's `member` command). A dispute's coins follow its money (since
+v0.11.0): an inquiry, which takes none, moves none; a dispute won puts the
+money back, and Azooka Bay restores exactly what it took (the payment
+becomes `reinstated`; what the buyer had spent before stays spent). A
+`reinstated` payment is paid again, so a refund or another dispute after
+it takes back again. Two disputes at once (rare): the coins come back
+only once both have put the money back. A refund is final. Every event
+is acted on once, in whatever order Stripe sends them.
 
 A purchase made on Stripe's word is Azooka Bay's own transaction, not the
 site's: `POST /v1/reverse` can't undo it (`404 unknown_transaction`).
+
+### Hearing of it later: ask when you act, and once a day
+
+Some news about a payment comes long after the buyer left the return
+page: a refund, a chargeback, a dispute won, a bank debit that cleared
+days later. Coins need nothing from the site: Azooka Bay credits them,
+takes them back and restores them itself. A site that gave something
+beyond coins for a payment (a membership, a perk, a title) learns what
+became of it by asking at the moments it acts on it, and once a day:
+
+- Keep the `session_id` that `POST /v1/checkout` answers, from the
+  moment the checkout opens (not from the return page, which a buyer can
+  close before it loads).
+- Ask `GET /v1/checkout` for it at the member's login, and before
+  granting anything that rests on the payment. If the site's sessions
+  last long, ask when one is renewed too.
+- Once a day, read `GET /v1/payments` after the last `next` you kept,
+  and act on what's there (keep reading while `more`). That bounds how
+  long any change goes unheard to a day, whatever the site's sessions
+  are like: a member who doesn't come back, a login ask that failed. It's
+  the one timed check these docs ask of a site: one request a day, which
+  usually answers nothing.
+- `settled` and `reinstated` stand; `refunded` and `charged_back` don't
+  (what the site gave for it is the site's to take back); `open` and
+  `processing` aren't paid yet. Asking about an open checkout has Azooka
+  Bay check with Stripe, so a buyer who paid and closed the tab is
+  credited then.
+- Sites that sell only coins need none of this.
 
 ### POST /v1/stripe/webhook/<account>
 
@@ -661,7 +760,9 @@ up is in operations.md.
 The events it acts on are `checkout.session.completed`,
 `checkout.session.async_payment_succeeded`,
 `checkout.session.async_payment_failed`, `checkout.session.expired`,
-`charge.refunded` and `charge.dispute.created`. Every one is idempotent,
+`charge.refunded`, `charge.dispute.funds_withdrawn` and
+`charge.dispute.funds_reinstated` (since v0.11.0; before it,
+`charge.dispute.created`). Every one is idempotent,
 since Stripe delivers at least once and in no promised order. Events for
 checkouts Azooka Bay didn't open (another integration's sales on the same
 account, whatever reference they carry) and events of the other mode
