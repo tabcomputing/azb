@@ -347,8 +347,9 @@ its `login/start`, `login/verify` and `site/login` then answer
 
 A session is the product's; Azooka Bay steps out after the login. A
 branch keeps identity's word on each person and asks again once it is a
-day old, when the person next acts (`spend`, `issue`, `checkout`, vault
-and profile writes, `GET /v1/user`): at most a second, and with no
+day old, when the person is next named in a call (`spend`, `issue`,
+`checkout`, the vault, profiles, `GET /v1/valuables`, `GET /v1/user`;
+not `GET /v1/balance`, which shows no hold): at most a second, and with no
 answer it goes on what it has. So:
 
 - **End the session on `user_inactive`**, from any call.

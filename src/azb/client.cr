@@ -583,12 +583,19 @@ module AzookaBay
     # transacting, and login mail sent, failed and links rejected, per
     # window (15m, 24h, 7d, 30d). With identity, its mail counts are added
     # in, since logins happen there; the people stay the branch's, which
-    # sees each one come in.
+    # sees each one come in. If identity can't answer, the branch's numbers
+    # come back alone, marked `"partial": true`.
     def stats : JSON::Any
       r = get("/v1/stats")
       if id = @identity
+        theirs = begin
+          id.get("/v1/stats")["windows"].as_h
+        rescue Error | TransportError
+          r.as_h["partial"] = JSON::Any.new(true)
+          return r
+        end
         windows = r["windows"].as_h
-        id.get("/v1/stats")["windows"].as_h.each do |window, counts|
+        theirs.each do |window, counts|
           next unless mine = windows[window]?.try(&.as_h?)
           counts.as_h.each do |metric, n|
             mine[metric] = JSON::Any.new((mine[metric]?.try(&.as_i64?) || 0_i64) + n.as_i64)

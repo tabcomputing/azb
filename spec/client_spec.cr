@@ -356,7 +356,7 @@ end
 private ID_SEED = "2".rjust(64, '0')
 
 private def with_identity(enter_delay : Time::Span = Time::Span.zero, entered_as : String = "u-1",
-                          &block : AzookaBay::Client, FakeBay, FakeBay -> Nil)
+                          id_stats : Int32 = 200, &block : AzookaBay::Client, FakeBay, FakeBay -> Nil)
   branch_key = AzookaBay::Ed25519::SigningKey.new(SEED.hexbytes)
   id_key = AzookaBay::Ed25519::SigningKey.new(ID_SEED.hexbytes)
   entries = 0
@@ -367,7 +367,8 @@ private def with_identity(enter_delay : Time::Span = Time::Span.zero, entered_as
     when "/v1/login/start"  then {202, %({"ok":true})}
     when "/v1/login/verify" then {200, %({"user_id":"u-1","email":"tom@example.com","redirect_path":"/midway","pass":"AZBP1.fields.sig"})}
     when "/v1/site/login"   then {200, %({"changed":true})}
-    when "/v1/stats"        then {200, stats.call(%("login_emails_sent":3,"login_emails_failed":1,"login_links_rejected":0))}
+    when "/v1/stats"
+      id_stats == 200 ? {200, stats.call(%("login_emails_sent":3,"login_emails_failed":1,"login_links_rejected":0))} : {id_stats, %({"error":"stats_unavailable"})}
     else                         {404, %({"error":"not_found"})}
     end
   end
@@ -447,6 +448,14 @@ describe "AzookaBay::Client with identity" do
       day["login_emails_failed"].should eq 1
       day["users_logged_in"].should eq 5
       client.stats["windows"]["7d"]["login_emails_sent"].should eq 4
+    end
+  end
+
+  it "gives the branch's numbers alone, marked partial, when identity can't answer" do
+    with_identity(id_stats: 503) do |client, _, _|
+      s = client.stats
+      s["partial"].as_bool.should be_true
+      s["windows"]["24h"]["login_emails_sent"].as_i64.should eq 1
     end
   end
 
