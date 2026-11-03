@@ -47,8 +47,15 @@ module AzookaBay
   #     login = azb.login_verify(token)
   #     azb.issue(user_id: login.user_id, asset: "bones", amount: 20,
   #               idempotency_key: "welcome-#{login.user_id}")
+  #
+  # A site whose people log in at Azooka Bay's identity service (server
+  # v0.12.0+) gives the client identity's address and its key there too
+  # (`with_identity`, or AZB_IDENTITY_* in `from_env`). Logins then go to
+  # identity and everything else to the site's branch, as before; the
+  # calls and what they return are the same.
   class Client
-    DEFAULT_BASE_URL = "https://api.azookabay.com"
+    DEFAULT_BASE_URL     = "https://api.azookabay.com"
+    DEFAULT_IDENTITY_URL = "https://id.azookabay.com"
 
     # An API error, post-authentication or otherwise.
     #
@@ -107,6 +114,9 @@ module AzookaBay
     getter key_id : String
     getter base_url : String
 
+    # The connection to identity, when this site logs people in there.
+    @identity : Client? = nil
+
     # `seed` is the 32-byte Ed25519 private seed, as raw bytes, 64 hex chars, or
     # base64. Accepting all three matters in practice: a credential file's
     # encoding is decided by whatever wrote it, and a silent format mismatch
@@ -126,12 +136,40 @@ module AzookaBay
     end
 
     # Reads AZB_SITE_ID, AZB_KEY_ID, AZB_PRIVATE_KEY_SEED and optional
-    # AZB_BASE_URL — the names the enrollment tooling emits.
+    # AZB_BASE_URL — the names the enrollment tooling emits. With
+    # AZB_IDENTITY_KEY_ID and AZB_IDENTITY_KEY_SEED (and optional
+    # AZB_IDENTITY_URL), logins go to identity (`with_identity`).
     def self.from_env : Client
       site = ENV["AZB_SITE_ID"]? || raise ConfigError.new("AZB_SITE_ID not set")
       key  = ENV["AZB_KEY_ID"]? || raise ConfigError.new("AZB_KEY_ID not set")
       seed = ENV["AZB_PRIVATE_KEY_SEED"]? || raise ConfigError.new("AZB_PRIVATE_KEY_SEED not set")
-      new(site, key, seed, ENV["AZB_BASE_URL"]? || DEFAULT_BASE_URL)
+      client = new(site, key, seed, ENV["AZB_BASE_URL"]? || DEFAULT_BASE_URL)
+      id_key, id_seed, id_url = ENV["AZB_IDENTITY_KEY_ID"]?.presence, ENV["AZB_IDENTITY_KEY_SEED"]?.presence,
+        ENV["AZB_IDENTITY_URL"]?.presence
+      if id_key || id_seed || id_url
+        unless id_key && id_seed
+          raise ConfigError.new("AZB_IDENTITY_KEY_ID and AZB_IDENTITY_KEY_SEED go together")
+        end
+        client.with_identity(id_key, id_seed, id_url || DEFAULT_IDENTITY_URL)
+      end
+      client
+    end
+
+    # Log this site's people in at identity (server v0.12.0+): its key
+    # there (a second one, beside the branch's; the site id is the same)
+    # and identity's address. login_start, login_verify, login_verify_code
+    # and set_login go to identity; a login's pass is handed to the branch,
+    # which makes or refreshes the member there. Everything else goes to
+    # the branch, as before. Returns self.
+    def with_identity(key_id : String, seed : String | Bytes,
+                      url : String = DEFAULT_IDENTITY_URL) : self
+      @identity = Client.new(@site_id, key_id, seed, url, @connect_timeout, @read_timeout)
+      self
+    end
+
+    # Whether logins go to identity.
+    def identity? : Bool
+      !@identity.nil?
     end
 
     # True when all three credentials are present. Lets a service report its own
@@ -286,6 +324,12 @@ module AzookaBay
       get("/v1/whoami")
     end
 
+    # The same at identity (server v0.12.0+): this site, its key there, and
+    # the branch it logs people in for.
+    def identity_whoami : JSON::Any
+      identity_client.get("/v1/whoami")
+    end
+
     # Email the user a way in, branded as this site: a magic link, a typed
     # code (the "Magic Word", server v0.7.0+), or both — whichever the
     # site's login method is (set by the Azooka Bay operator).
@@ -297,15 +341,14 @@ module AzookaBay
       payload = {"email" => email}
       payload["redirect_path"] = redirect_path if redirect_path
       payload["request_ip"] = request_ip if request_ip
-      post("/v1/login/start", payload)
+      logins.post("/v1/login/start", payload)
     end
 
     # Redeem the token from the emailed link. The first successful verify CREATES
     # the user; afterwards Azooka Bay plays no part in the session — that is the
     # calling site's to own.
     def login_verify(token : String) : Login
-      r = post("/v1/login/verify", {"token" => token})
-      Login.new(r["user_id"].as_s, r["email"].as_s, r["redirect_path"]?.try(&.as_s?))
+      verify({"token" => token})
     end
 
     # Redeem a typed login code (server v0.7.0+): the code from the email,
@@ -313,7 +356,29 @@ module AzookaBay
     # address it was sent to. Every failure is the same 401 invalid_code —
     # wrong, used, expired, too many tries — so show one message for all.
     def login_verify_code(email : String, code : String) : Login
-      r = post("/v1/login/verify", {"email" => email, "code" => code})
+      verify({"email" => email, "code" => code})
+    end
+
+    # With identity, a login there answers with a pass for this site's
+    # branch, and the branch, handed it, makes or refreshes the member and
+    # checks their standing in the realm (user_inactive, as before). A
+    # timeout handing it over is retried once, freshly signed: the branch
+    # answers the same pass from the same site as it did the first time.
+    private def verify(payload : Hash(String, String)) : Login
+      id = @identity
+      return login(post("/v1/login/verify", payload)) unless id
+      r = id.post("/v1/login/verify", payload)
+      pass = r["pass"]?.try(&.as_s?) ||
+             raise Error.new(502, "bad_response", "azooka bay identity answered a login without a pass")
+      entered = begin
+        post("/v1/members/enter", {"pass" => pass})
+      rescue ex : TransportError
+        post("/v1/members/enter", {"pass" => pass})
+      end
+      Login.new(entered["user_id"].as_s, entered["email"].as_s, r["redirect_path"]?.try(&.as_s?))
+    end
+
+    private def login(r : JSON::Any) : Login
       Login.new(r["user_id"].as_s, r["email"].as_s, r["redirect_path"]?.try(&.as_s?))
     end
 
@@ -343,7 +408,7 @@ module AzookaBay
       payload["email_body"] = JSON::Any.new(email_body) if email_body
       payload["fallback_subject"] = JSON::Any.new(fallback_subject) if fallback_subject
       payload["fallback_body"] = JSON::Any.new(fallback_body) if fallback_body
-      put("/v1/site/login", payload)["changed"].as_bool
+      logins.put("/v1/site/login", payload)["changed"].as_bool
     end
 
     # A member's standing in this site's realm (server v0.6.0+): cheap to
@@ -500,6 +565,34 @@ module AzookaBay
           e["amount_cents"].as_i64, e["currency"].as_s, e["transaction_id"]?.try(&.as_i64?), e["at"].as_s)
       end
       PaymentChanges.new(list, r["next"].as_i64, r["more"]?.try(&.as_bool?) || false)
+    end
+
+    # This site's numbers (GET /v1/stats): people logged in, new and
+    # transacting, and login mail sent, failed and links rejected, per
+    # window (15m, 24h, 7d, 30d). With identity, its mail counts are added
+    # in, since logins happen there; the people stay the branch's, which
+    # sees each one come in.
+    def stats : JSON::Any
+      r = get("/v1/stats")
+      if id = @identity
+        windows = r["windows"].as_h
+        id.get("/v1/stats")["windows"].as_h.each do |window, counts|
+          next unless mine = windows[window]?.try(&.as_h?)
+          counts.as_h.each do |metric, n|
+            mine[metric] = JSON::Any.new((mine[metric]?.try(&.as_i64?) || 0_i64) + n.as_i64)
+          end
+        end
+      end
+      r
+    end
+
+    # Where logins go: identity, when this site logs people in there.
+    private def logins : Client
+      @identity || self
+    end
+
+    private def identity_client : Client
+      @identity || raise ConfigError.new("no identity connection (with_identity, or AZB_IDENTITY_* in from_env)")
     end
 
     private def tx(r : JSON::Any) : Transaction

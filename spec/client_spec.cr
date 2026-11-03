@@ -350,3 +350,111 @@ describe AzookaBay::Client do
     end
   end
 end
+
+# A site that logs people in at identity: identity and its branch, each
+# checking the signature under its own key for the site.
+private ID_SEED = "2".rjust(64, '0')
+
+private def with_identity(enter_delay : Time::Span = Time::Span.zero,
+                          &block : AzookaBay::Client, FakeBay, FakeBay -> Nil)
+  branch_key = AzookaBay::Ed25519::SigningKey.new(SEED.hexbytes)
+  id_key = AzookaBay::Ed25519::SigningKey.new(ID_SEED.hexbytes)
+  entries = 0
+  stats = ->(counts : String) { %({"site":"pirate-ship","as_of":"2026-11-03T12:00:00Z","windows":{"24h":{#{counts}},"7d":{#{counts}}}}) }
+  identity = FakeBay.new(AzookaBay::Ed25519::VerifyKey.new(id_key.public_key)) do |path|
+    case path
+    when "/v1/whoami"       then {200, %({"site":"pirate-ship","key":"ps-id-1","branch":"games","service":"identity"})}
+    when "/v1/login/start"  then {202, %({"ok":true})}
+    when "/v1/login/verify" then {200, %({"user_id":"u-1","email":"tom@example.com","redirect_path":"/midway","pass":"AZBP1.fields.sig"})}
+    when "/v1/site/login"   then {200, %({"changed":true})}
+    when "/v1/stats"        then {200, stats.call(%("login_emails_sent":3,"login_emails_failed":1,"login_links_rejected":0))}
+    else                         {404, %({"error":"not_found"})}
+    end
+  end
+  branch = FakeBay.new(AzookaBay::Ed25519::VerifyKey.new(branch_key.public_key)) do |path|
+    case path
+    when "/v1/members/enter"
+      entries += 1
+      sleep enter_delay if entries == 1
+      {200, %({"user_id":"u-1","email":"tom@example.com","replay":#{entries > 1}})}
+    when .starts_with?("/v1/user")
+      {200, %({"user_id":"u-1","realm":"silicon-circus","active":true,"hold":null,"member_since":"2026-10-01T12:00:00Z"})}
+    when "/v1/stats"
+      {200, stats.call(%("users_logged_in":5,"new_users":2,"login_emails_sent":1,"login_emails_failed":0,"login_links_rejected":0,"users_transacting":4))}
+    else {404, %({"error":"not_found"})}
+    end
+  end
+  client = AzookaBay::Client.new("pirate-ship", "ps-1", SEED, "http://127.0.0.1:#{branch.port}",
+    read_timeout: 300.milliseconds).with_identity("ps-id-1", ID_SEED, "http://127.0.0.1:#{identity.port}")
+  begin
+    block.call(client, identity, branch)
+  ensure
+    identity.close
+    branch.close
+  end
+end
+
+describe "AzookaBay::Client with identity" do
+  it "logs in at identity and hands the pass to the branch; everything else is the branch's" do
+    with_identity do |client, identity, branch|
+      client.identity?.should be_true
+      client.login_start("tom@example.com", redirect_path: "/midway")
+      identity.last_path.should eq "/v1/login/start"
+      identity.verified.should be_true
+      branch.last_path.should be_nil
+
+      login = client.login_verify("tok")
+      {login.user_id, login.email, login.redirect_path}.should eq({"u-1", "tom@example.com", "/midway"})
+      JSON.parse(identity.last_body.not_nil!)["token"].should eq "tok"
+      branch.last_path.should eq "/v1/members/enter"
+      branch.verified.should be_true
+      JSON.parse(branch.last_body.not_nil!)["pass"].should eq "AZBP1.fields.sig"
+
+      client.login_verify_code("tom@example.com", "123456").user_id.should eq "u-1"
+      JSON.parse(identity.last_body.not_nil!)["code"].should eq "123456"
+
+      client.set_login("code", code_style: "digits", code_length: 6).should be_true
+      identity.last_path.should eq "/v1/site/login"
+      client.identity_whoami["branch"].should eq "games"
+
+      client.user("u-1").active.should be_true
+      branch.last_path.should eq "/v1/user?user_id=u-1"
+    end
+  end
+
+  it "retries handing over the pass once, freshly signed, after a timeout" do
+    with_identity(enter_delay: 600.milliseconds) do |client, _, branch|
+      client.login_verify("tok").user_id.should eq "u-1"
+      enters = branch.nonces.size
+      enters.should eq 2
+      branch.nonces.uniq.size.should eq 2
+    end
+  end
+
+  it "adds identity's login mail to the branch's stats" do
+    with_identity do |client, _, _|
+      day = client.stats["windows"]["24h"]
+      day["login_emails_sent"].should eq 4
+      day["login_emails_failed"].should eq 1
+      day["users_logged_in"].should eq 5
+      client.stats["windows"]["7d"]["login_emails_sent"].should eq 4
+    end
+  end
+
+  it "reads identity's settings with the site's, both halves or neither" do
+    vars = {"AZB_SITE_ID" => "pirate-ship", "AZB_KEY_ID" => "ps-1", "AZB_PRIVATE_KEY_SEED" => SEED}
+    begin
+      vars.each { |k, v| ENV[k] = v }
+      AzookaBay::Client.from_env.identity?.should be_false
+      ENV["AZB_IDENTITY_KEY_ID"] = "ps-id-1"
+      expect_raises(AzookaBay::Client::ConfigError, /go together/) { AzookaBay::Client.from_env }
+      ENV["AZB_IDENTITY_KEY_SEED"] = ID_SEED
+      AzookaBay::Client.from_env.identity?.should be_true
+      expect_raises(AzookaBay::Client::ConfigError, /no identity/) do
+        AzookaBay::Client.new("s", "k", SEED).identity_whoami
+      end
+    ensure
+      (vars.keys + ["AZB_IDENTITY_KEY_ID", "AZB_IDENTITY_KEY_SEED"]).each { |k| ENV.delete(k) }
+    end
+  end
+end

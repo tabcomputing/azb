@@ -68,6 +68,13 @@ azb.user(login.user_id).active             # standing in this realm (server v0.6
 azb.issue(user_id: login.user_id, asset: "bones", amount: 20,
           idempotency_key: "welcome-#{login.user_id}")
 
+# logging in at identity (server v0.12.0+): the site's second key, its key
+# at identity; logins go there, the pass to the branch, all else as before
+azb = AzookaBay::Client.from_env           # + AZB_IDENTITY_KEY_ID / AZB_IDENTITY_KEY_SEED [/ AZB_IDENTITY_URL]
+azb.identity?                              # true: login_start, login_verify(_code) and set_login go to identity
+azb.identity_whoami                        # proves the identity key end to end
+azb.stats                                  # the branch's numbers, with identity's login mail added
+
 # the site's own login look (server v0.8.0+): push it on every deploy;
 # whole-set and idempotent, returns whether anything changed
 azb.set_login("code", code_style: "digits", code_length: 6, label: "code")

@@ -16,8 +16,8 @@ Every endpoint that names a user (`issue`, `spend`, `balance`,
   `404 {"error":"unknown_user"}`. No realm can probe whether a person has
   an account in another.
 - **`user_inactive` (403)** means the user is suspended or closed either
-  network-wide or in *this* realm. A suspension in one realm leaves the
-  user's other realms untouched.
+  network-wide (at identity, or at this branch) or in *this* realm. A
+  suspension in one realm leaves the user's other realms untouched.
 - Reads still answer for inactive members and carry a `hold`; writes
   refuse.
 
@@ -51,10 +51,13 @@ site's own standing, so a deployment's `/health` can report what is
 *wired* (grants in place) rather than merely configured. A site sees
 only its own grants, never another's. `version` is the running Azooka
 Bay's (since v0.9.2), so a deploy can confirm what it put in place.
+`branch` is this branch's id at identity, or null for one that logs its
+people in itself; `own_login` says whether its own login endpoints are
+on (both since v0.12.0).
 
 → `200 {"site":"pirate-ship","key":"pirate-ship-20260726-b0c3",
         "realm":"silicon-circus","capabilities":{"scc":["issue","spend"]},
-        "version":"0.9.2"}`
+        "version":"0.12.0","branch":"games","own_login":true}`
 
 Permissions are `issue`, `spend`, `exchange` and `sell`.
 
@@ -272,6 +275,85 @@ and leave the site's own corrective push refused. Revoke the key
 product's login file (`azookabay-enroll login --site S --file …`), which
 isn't rate-limited.
 
+## Logging in at identity (v0.12.0+)
+
+Azooka Bay runs as **identity**, one service for the whole network at
+`https://id.azookabay.com`, and **branches**, each holding some realms'
+memberships, money and vault (docs/architecture.md, "Identity and
+branches"). A site whose branch takes passes logs its people in at
+identity, then hands the login's **pass** to its branch. azb 0.7 does
+all of it: `AzookaBay::Client#with_identity` (or `AZB_IDENTITY_KEY_ID`,
+`AZB_IDENTITY_KEY_SEED` and `AZB_IDENTITY_URL` in `from_env`), and the
+site's calls and their answers stay as they were.
+
+The site keeps its id, and holds a **second key**, its key at identity:
+AZB1 doesn't name the server a request is for, so one key at both would
+let a request signed for one be replayed at the other.
+
+### At identity
+
+Signed with the site's key at identity:
+
+- `POST /v1/login/start`, `PUT /v1/site/login`: as at a branch (above).
+  The mail is the site's: its From, its look, landing on its page.
+- `POST /v1/login/verify`: as at a branch, and the answer carries a pass
+  for the site's branch:
+
+  → `200 {"user_id":"<uuid>","email":"tom@example.com","redirect_path":"/midway","pass":"AZBP1.…"}`
+
+  A first login anywhere makes the person; their id is the same at every
+  branch. `user_inactive` (403): closed or suspended network-wide.
+  `branch_unavailable` (503): the site's branch is suspended at identity.
+- `GET /v1/whoami` → `{"site", "key", "branch", "service":"identity", "version"}`.
+- `GET /v1/stats`: identity's half of the site's numbers, its login mail
+  (`login_emails_sent`, `login_emails_failed`, `login_links_rejected`),
+  per window as at a branch. azb's `stats` adds them to the branch's.
+
+### POST /v1/members/enter
+
+At the branch, signed with the site's branch key, within five minutes of
+the login:
+
+```json
+{"pass": "AZBP1.…"}
+```
+
+→ `200 {"user_id":"<uuid>","email":"tom@example.com","replay":false}`
+
+The branch checks the pass (signed by identity, for this branch and this
+site, unexpired, never used by another), makes or refreshes the
+member's entry, joins them to the site's realm, and checks their
+standing there. Then the site sets its own session, as after
+`login/verify` before. The same pass from the same site gets the same
+answer again (`"replay": true`), so a timed-out call is safe to retry:
+azb retries once.
+
+| Error | Status | Meaning |
+|---|---|---|
+| `invalid_pass` | 403 | not identity's, for another branch or site, expired, or already used by another — log in again |
+| `account_mismatch` | 409 | the branch knows this person's email under another id, or the id under another email: refused, never repointed (an operator's matter) |
+| `user_inactive` | 403 | suspended or closed in this realm, at this branch, or at identity |
+| `identity_off` | 503 | this branch doesn't take passes |
+
+A branch whose people all log in at identity turns its own login off:
+its `login/start`, `login/verify` and `site/login` then answer
+`410 {"error":"login_at_identity"}`.
+
+### Sessions, and hearing of a closure
+
+A session is the product's; Azooka Bay steps out after the login. A
+branch keeps identity's word on each person and asks again once it is a
+day old, when the person next acts (`spend`, `issue`, `checkout`, vault
+and profile writes, `GET /v1/user`): at most a second, and with no
+answer it goes on what it has. So:
+
+- **End the session on `user_inactive`**, from any call.
+- **Call `GET /v1/user` when a member comes back** (a new visit on an
+  old session), so a closure reaches your own pages too, not only your
+  calls that move value.
+- **About 60 days** is the suggested session length; it's each
+  product's to choose.
+
 ## POST /v1/issue
 
 Mint asset to a user. Requires `may_issue` on the asset.
@@ -419,7 +501,10 @@ outage must never sign the network out.
 
 A member's standing in the calling site's realm: may they act, and if
 not, the copy to show them. Use it to re-check a session cheaply (it
-reads one membership row).
+reads one membership row), and when a member comes back on an old
+session. At a branch that takes passes it may first ask identity about
+them, once a day at most and for a second at most ("Sessions, and
+hearing of a closure", above).
 
 → `200 {"user_id":"<uuid>","realm":"silicon-circus","active":true,"hold":null,"member_since":"2026-10-01T12:00:00Z"}`
 
@@ -482,7 +567,10 @@ The audit log records which keys changed, never the values.
 Aggregate activity for the **calling site only** — the numbers an admin
 panel's pulse wants. Never a sister site's, never another realm's, and
 counts only: no emails, no user ids. Read from the audit log, so it
-covers everything since the site was enrolled.
+covers everything since the site was enrolled. A login is one here or,
+since v0.12.0, an entry by pass (`members/enter`); for a site that logs
+people in at identity, the login mail is counted there (identity's
+`GET /v1/stats`), and azb's `stats` adds the two.
 
 → `200`
 ```json
