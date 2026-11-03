@@ -355,7 +355,7 @@ end
 # checking the signature under its own key for the site.
 private ID_SEED = "2".rjust(64, '0')
 
-private def with_identity(enter_delay : Time::Span = Time::Span.zero,
+private def with_identity(enter_delay : Time::Span = Time::Span.zero, entered_as : String = "u-1",
                           &block : AzookaBay::Client, FakeBay, FakeBay -> Nil)
   branch_key = AzookaBay::Ed25519::SigningKey.new(SEED.hexbytes)
   id_key = AzookaBay::Ed25519::SigningKey.new(ID_SEED.hexbytes)
@@ -376,7 +376,7 @@ private def with_identity(enter_delay : Time::Span = Time::Span.zero,
     when "/v1/members/enter"
       entries += 1
       sleep enter_delay if entries == 1
-      {200, %({"user_id":"u-1","email":"tom@example.com","replay":#{entries > 1}})}
+      {200, %({"user_id":"#{entered_as}","email":"tom@example.com","replay":#{entries > 1}})}
     when .starts_with?("/v1/user")
       {200, %({"user_id":"u-1","realm":"silicon-circus","active":true,"hold":null,"member_since":"2026-10-01T12:00:00Z"})}
     when "/v1/stats"
@@ -428,6 +428,15 @@ describe "AzookaBay::Client with identity" do
       enters = branch.nonces.size
       enters.should eq 2
       branch.nonces.uniq.size.should eq 2
+    end
+  end
+
+  it "refuses a login the branch answers with another user" do
+    with_identity(entered_as: "u-2") do |client, _, _|
+      ex = expect_raises(AzookaBay::Client::Error) { client.login_verify("tok") }
+      ex.code.should eq "branch_mismatch"
+      ex = expect_raises(AzookaBay::Client::Error) { client.login_verify_code("tom@example.com", "123456") }
+      ex.code.should eq "branch_mismatch"
     end
   end
 

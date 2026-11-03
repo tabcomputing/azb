@@ -323,8 +323,12 @@ the login:
 The branch checks the pass (signed by identity, for this branch and this
 site, unexpired, never used by another), makes or refreshes the
 member's entry, joins them to the site's realm, and checks their
-standing there. Then the site sets its own session, as after
-`login/verify` before. The same pass from the same site gets the same
+standing there. **The site checks that the branch's `user_id` is the
+one identity's `login/verify` answered**, and refuses the login if not:
+who logged in is identity's word, so a branch, honest or not, can never
+hand the site another person's account (azb: `502 branch_mismatch`).
+Then the site sets its own session, as after `login/verify` before, as
+identity's `user_id` and email. The same pass from the same site gets the same
 answer again (`"replay": true`), so a timed-out call is safe to retry:
 azb retries once.
 

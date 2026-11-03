@@ -364,18 +364,30 @@ module AzookaBay
     # checks their standing in the realm (user_inactive, as before). A
     # timeout handing it over is retried once, freshly signed: the branch
     # answers the same pass from the same site as it did the first time.
+    #
+    # Who logged in is identity's word, not the branch's: the branch must
+    # answer with the user the pass names, or the login is refused
+    # (branch_mismatch), so a branch, honest or not, can never hand the
+    # site another person's account.
     private def verify(payload : Hash(String, String)) : Login
       id = @identity
       return login(post("/v1/login/verify", payload)) unless id
       r = id.post("/v1/login/verify", payload)
-      pass = r["pass"]?.try(&.as_s?) ||
-             raise Error.new(502, "bad_response", "azooka bay identity answered a login without a pass")
+      pass = r["pass"]?.try(&.as_s?)
+      user_id = r["user_id"]?.try(&.as_s?)
+      email = r["email"]?.try(&.as_s?)
+      unless pass && user_id && email
+        raise Error.new(502, "bad_response", "azooka bay identity answered a login without a pass, user id or email")
+      end
       entered = begin
         post("/v1/members/enter", {"pass" => pass})
       rescue ex : TransportError
         post("/v1/members/enter", {"pass" => pass})
       end
-      Login.new(entered["user_id"].as_s, entered["email"].as_s, r["redirect_path"]?.try(&.as_s?))
+      unless entered["user_id"]?.try(&.as_s?) == user_id
+        raise Error.new(502, "branch_mismatch", "the branch answered a pass for #{user_id} with another user; refused")
+      end
+      Login.new(user_id, email, r["redirect_path"]?.try(&.as_s?))
     end
 
     private def login(r : JSON::Any) : Login
