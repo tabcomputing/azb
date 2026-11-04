@@ -48,14 +48,13 @@ module AzookaBay
   #     azb.issue(user_id: login.user_id, asset: "bones", amount: 20,
   #               idempotency_key: "welcome-#{login.user_id}")
   #
-  # A site whose people log in at Azooka Bay's identity service (server
-  # v0.12.0+) gives the client identity's address and its key there too
-  # (`with_identity`, or AZB_IDENTITY_* in `from_env`). Logins then go to
-  # identity and everything else to the site's branch, as before; the
-  # calls and what they return are the same.
+  # A site that logs its people in at its own login service (the split,
+  # server v0.13.0+) gives the client the service's address and its key
+  # there too (`with_login`, or AZB_LOGIN_* in `from_env`). Logins then go
+  # to the login service and everything else to the site's branch, as
+  # before; the calls and what they return are the same.
   class Client
-    DEFAULT_BASE_URL     = "https://api.azookabay.com"
-    DEFAULT_IDENTITY_URL = "https://id.azookabay.com"
+    DEFAULT_BASE_URL = "https://api.azookabay.com"
 
     # An API error, post-authentication or otherwise.
     #
@@ -77,11 +76,21 @@ module AzookaBay
         @status == 401 && @code == "unauthorized"
       end
 
-      # Retryable by the caller: the mail provider refused, or Stripe never
-      # answered (retry a checkout under the SAME idempotency key), and the
-      # server's own guidance for the code is "retry later".
+      # Retryable by the caller: the mail provider refused, Stripe never
+      # answered (retry a checkout under the SAME idempotency key), or the
+      # login service couldn't reach identity (the link or code is still
+      # good), and the server's own guidance for the code is "retry later".
       def retryable? : Bool
-        @code == "email_failed" || @code == "stripe_unreachable"
+        @code.in?("email_failed", "stripe_unreachable", "identity_unavailable")
+      end
+
+      # An issue refused by the site's issue limits (server v0.13.0+):
+      # `issue_limit_account` (this member has had their share for now) or
+      # `issue_limit_site` (the site has given all it may today: tell the
+      # operator). Refused and capped: decline, don't retry until the
+      # window has moved. The idempotency key is left unused.
+      def issue_limit? : Bool
+        @code.in?("issue_limit_account", "issue_limit_site")
       end
     end
 
@@ -114,8 +123,8 @@ module AzookaBay
     getter key_id : String
     getter base_url : String
 
-    # The connection to identity, when this site logs people in there.
-    @identity : Client? = nil
+    # The connection to the site's login service, when it logs people in there.
+    @login : Client? = nil
 
     # `seed` is the 32-byte Ed25519 private seed, as raw bytes, 64 hex chars, or
     # base64. Accepting all three matters in practice: a credential file's
@@ -137,39 +146,45 @@ module AzookaBay
 
     # Reads AZB_SITE_ID, AZB_KEY_ID, AZB_PRIVATE_KEY_SEED and optional
     # AZB_BASE_URL — the names the enrollment tooling emits. With
-    # AZB_IDENTITY_KEY_ID and AZB_IDENTITY_KEY_SEED (and optional
-    # AZB_IDENTITY_URL), logins go to identity (`with_identity`).
+    # AZB_LOGIN_KEY_ID, AZB_LOGIN_KEY_SEED and AZB_LOGIN_URL (all three),
+    # logins go to the site's login service (`with_login`).
     def self.from_env : Client
       site = ENV["AZB_SITE_ID"]? || raise ConfigError.new("AZB_SITE_ID not set")
       key  = ENV["AZB_KEY_ID"]? || raise ConfigError.new("AZB_KEY_ID not set")
       seed = ENV["AZB_PRIVATE_KEY_SEED"]? || raise ConfigError.new("AZB_PRIVATE_KEY_SEED not set")
+      if old = %w(AZB_IDENTITY_KEY_ID AZB_IDENTITY_KEY_SEED AZB_IDENTITY_URL).find { |k| ENV[k]?.presence }
+        # Said rather than ignored: a site still set up for v0.12 would
+        # otherwise log people in at its branch without a word.
+        raise ConfigError.new("#{old} is gone since azb 0.8: a site logs its people in at its own login " \
+                              "service (AZB_LOGIN_KEY_ID, AZB_LOGIN_KEY_SEED, AZB_LOGIN_URL)")
+      end
       client = new(site, key, seed, ENV["AZB_BASE_URL"]? || DEFAULT_BASE_URL)
-      id_key, id_seed, id_url = ENV["AZB_IDENTITY_KEY_ID"]?.presence, ENV["AZB_IDENTITY_KEY_SEED"]?.presence,
-        ENV["AZB_IDENTITY_URL"]?.presence
-      if id_key || id_seed || id_url
-        unless id_key && id_seed
-          raise ConfigError.new("AZB_IDENTITY_KEY_ID and AZB_IDENTITY_KEY_SEED go together")
+      login = {ENV["AZB_LOGIN_KEY_ID"]?.presence, ENV["AZB_LOGIN_KEY_SEED"]?.presence, ENV["AZB_LOGIN_URL"]?.presence}
+      if login.any?
+        login_key, login_seed, login_url = login
+        unless login_key && login_seed && login_url
+          raise ConfigError.new("AZB_LOGIN_KEY_ID, AZB_LOGIN_KEY_SEED and AZB_LOGIN_URL go together")
         end
-        client.with_identity(id_key, id_seed, id_url || DEFAULT_IDENTITY_URL)
+        client.with_login(login_key, login_seed, login_url)
       end
       client
     end
 
-    # Log this site's people in at identity (server v0.12.0+): its key
-    # there (a second one, beside the branch's; the site id is the same)
-    # and identity's address. login_start, login_verify, login_verify_code
-    # and set_login go to identity; a login's pass is handed to the branch,
-    # which makes or refreshes the member there. Everything else goes to
-    # the branch, as before. Returns self.
-    def with_identity(key_id : String, seed : String | Bytes,
-                      url : String = DEFAULT_IDENTITY_URL) : self
-      @identity = Client.new(@site_id, key_id, seed, url, @connect_timeout, @read_timeout)
+    # Log this site's people in at its own login service (server v0.13.0+):
+    # the site's key there (a second one, beside the branch's, from
+    # `azookabay-login-enroll site`; the site id is the same) and the
+    # service's address. login_start, login_verify, login_verify_code and
+    # set_login go to the login service; a login's pass is handed to the
+    # branch, which makes or refreshes the member there. Everything else
+    # goes to the branch, as before. Returns self.
+    def with_login(key_id : String, seed : String | Bytes, url : String) : self
+      @login = Client.new(@site_id, key_id, seed, url, @connect_timeout, @read_timeout)
       self
     end
 
-    # Whether logins go to identity.
-    def identity? : Bool
-      !@identity.nil?
+    # Whether logins go to the site's login service.
+    def login? : Bool
+      !@login.nil?
     end
 
     # True when all three credentials are present. Lets a service report its own
@@ -309,6 +324,12 @@ module AzookaBay
     # A page of the feed. Keep `next` and ask after it next time; `more`:
     # there may be more now, so ask again at once.
     record PaymentChanges, changes : Array(PaymentChange), next : Int64, more : Bool
+    # One of the site's issue limits on an asset (server v0.13.0+), with
+    # what it has issued in the window and what's left.
+    record Allowance, limit : Int64, issued : Int64, remaining : Int64
+    # `site`: the 24-hour limit; `account`: the member's 30-day one (nil
+    # when no user was named). nil: no such limit.
+    record IssueAllowance, asset : String, site : Allowance?, account : Allowance?
 
     # Unsigned liveness probe — the one call needing no credentials.
     def health? : Bool
@@ -324,10 +345,13 @@ module AzookaBay
       get("/v1/whoami")
     end
 
-    # The same at identity (server v0.12.0+): this site, its key there, and
-    # the branch it logs people in for.
-    def identity_whoami : JSON::Any
-      identity_client.get("/v1/whoami")
+    # The same at the site's login service (server v0.13.0+): this site,
+    # its key there, and what identity says of the service (`identity`:
+    # the site's branch, the service's key and version; null when identity
+    # doesn't answer). A deploy checks that `login_whoami["identity"]["branch"]`
+    # is the branch's own `whoami["branch"]`.
+    def login_whoami : JSON::Any
+      login_client.get("/v1/whoami")
     end
 
     # Email the user a way in, branded as this site: a magic link, a typed
@@ -359,25 +383,26 @@ module AzookaBay
       verify({"email" => email, "code" => code})
     end
 
-    # With identity, a login there answers with a pass for this site's
-    # branch, and the branch, handed it, makes or refreshes the member and
-    # checks their standing in the realm (user_inactive, as before). A
-    # timeout handing it over is retried once, freshly signed: the branch
-    # answers the same pass from the same site as it did the first time.
+    # At a login service, a login answers with a pass for this site's
+    # branch (signed by identity and by the service), and the branch,
+    # handed it, makes or refreshes the member and checks their standing in
+    # the realm (user_inactive, as before). A timeout handing it over is
+    # retried once, freshly signed: the branch answers the same pass from
+    # the same site as it did the first time.
     #
     # Who logged in is identity's word, not the branch's: the branch must
     # answer with the user the pass names, or the login is refused
     # (branch_mismatch), so a branch, honest or not, can never hand the
     # site another person's account.
     private def verify(payload : Hash(String, String)) : Login
-      id = @identity
-      return login(post("/v1/login/verify", payload)) unless id
-      r = id.post("/v1/login/verify", payload)
+      service = @login
+      return login(post("/v1/login/verify", payload)) unless service
+      r = service.post("/v1/login/verify", payload)
       pass = r["pass"]?.try(&.as_s?)
       user_id = r["user_id"]?.try(&.as_s?)
       email = r["email"]?.try(&.as_s?)
       unless pass && user_id && email
-        raise Error.new(502, "bad_response", "azooka bay identity answered a login without a pass, user id or email")
+        raise Error.new(502, "bad_response", "azooka bay's login service answered a login without a pass, user id or email")
       end
       entered = begin
         post("/v1/members/enter", {"pass" => pass})
@@ -436,7 +461,8 @@ module AzookaBay
     # Mint asset to a user. `kind` is "grant" (winnings, promos, comps) or
     # "purchase" (issued for payment; reconciles against Stripe). A realm
     # that sells through Azooka Bay (`checkout`) refuses "purchase" here:
-    # there only Stripe's word makes one.
+    # there only Stripe's word makes one. The site's issue limits (server
+    # v0.13.0+) refuse it past them: `Error#issue_limit?`.
     def issue(user_id : String, asset : String, amount : Int64, idempotency_key : String,
               kind : String = "grant", description : String? = nil,
               metadata : Hash(String, JSON::Any)? = nil) : Transaction
@@ -446,6 +472,21 @@ module AzookaBay
       payload["description"] = JSON::Any.new(description) if description
       payload["metadata"] = JSON::Any.new(metadata) if metadata
       tx(post("/v1/issue", payload))
+    end
+
+    # What the site may still issue of an asset before its issue limits
+    # refuse it (server v0.13.0+): `site`, its 24-hour limit, and, for
+    # `user_id`, `account`, the member's 30-day one; nil where there's no
+    # such limit. A hint for saying no before asking: two issues can race
+    # between this and `issue`, which is still the check.
+    def issue_allowance(asset : String, user_id : String? = nil) : IssueAllowance
+      path = "/v1/issue/allowance?asset=#{URI.encode_www_form(asset)}"
+      path += "&user_id=#{URI.encode_www_form(user_id)}" if user_id
+      r = get(path)
+      allowance = ->(a : JSON::Any?) do
+        a.try { |x| x.raw.nil? ? nil : Allowance.new(x["limit"].as_i64, x["issued"].as_i64, x["remaining"].as_i64) }
+      end
+      IssueAllowance.new(r["asset"].as_s, allowance.call(r["site"]?), allowance.call(r["account"]?))
     end
 
     # sku: what the spend bought, an id written as a SKU's is (a-z, 0-9,
@@ -581,15 +622,15 @@ module AzookaBay
 
     # This site's numbers (GET /v1/stats): people logged in, new and
     # transacting, and login mail sent, failed and links rejected, per
-    # window (15m, 24h, 7d, 30d). With identity, its mail counts are added
-    # in, since logins happen there; the people stay the branch's, which
-    # sees each one come in. If identity can't answer, the branch's numbers
-    # come back alone, marked `"partial": true`.
+    # window (15m, 24h, 7d, 30d). With a login service, its mail counts are
+    # added in, since logins happen there; the people stay the branch's,
+    # which sees each one come in. If the login service can't answer, the
+    # branch's numbers come back alone, marked `"partial": true`.
     def stats : JSON::Any
       r = get("/v1/stats")
-      if id = @identity
+      if service = @login
         theirs = begin
-          id.get("/v1/stats")["windows"].as_h
+          service.get("/v1/stats")["windows"].as_h
         rescue Error | TransportError
           r.as_h["partial"] = JSON::Any.new(true)
           return r
@@ -605,13 +646,13 @@ module AzookaBay
       r
     end
 
-    # Where logins go: identity, when this site logs people in there.
+    # Where logins go: the site's login service, when it has one.
     private def logins : Client
-      @identity || self
+      @login || self
     end
 
-    private def identity_client : Client
-      @identity || raise ConfigError.new("no identity connection (with_identity, or AZB_IDENTITY_* in from_env)")
+    private def login_client : Client
+      @login || raise ConfigError.new("no login service connection (with_login, or AZB_LOGIN_* in from_env)")
     end
 
     private def tx(r : JSON::Any) : Transaction

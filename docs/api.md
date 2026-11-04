@@ -57,9 +57,13 @@ on (both since v0.12.0).
 
 → `200 {"site":"pirate-ship","key":"pirate-ship-20260726-b0c3",
         "realm":"silicon-circus","capabilities":{"scc":["issue","spend"]},
+        "issue_limits":{"scc":{"account_30d":20,"site_24h":1000}},
         "version":"0.12.0","branch":"games","own_login":true}`
 
-Permissions are `issue`, `spend`, `exchange` and `sell`.
+Permissions are `issue`, `spend`, `exchange` and `sell`. `issue_limits`
+(since v0.13.0) lists the assets the site's issues are limited on,
+each with `account_30d` and `site_24h` (null: no limit that way); see
+`POST /v1/issue`.
 
 ## POST /v1/login/start
 
@@ -275,39 +279,62 @@ and leave the site's own corrective push refused. Revoke the key
 product's login file (`azookabay-enroll login --site S --file …`), which
 isn't rate-limited.
 
-## Logging in at identity (v0.12.0+)
+## Logging in at the site's login service (the split)
 
 Azooka Bay runs as **identity**, one service for the whole network at
-`https://id.azookabay.com`, and **branches**, each holding some realms'
-memberships, money and vault (docs/architecture.md, "Identity and
-branches"). A site whose branch takes passes logs its people in at
-identity, then hands the login's **pass** to its branch. azb 0.7 does
-all of it: `AzookaBay::Client#with_identity` (or `AZB_IDENTITY_KEY_ID`,
-`AZB_IDENTITY_KEY_SEED` and `AZB_IDENTITY_URL` in `from_env`), and the
-site's calls and their answers stay as they were.
+`https://id.azookabay.com`, **branches**, each holding some realms'
+memberships, money and vault, and a **login service** per site, beside
+it (docs/architecture.md, "Identity and branches"; IDENTITY.md, "The
+split"). A site whose branch takes passes logs its people in at its
+login service, which asks identity who the person is and co-signs
+identity's pass; the site hands the pass to its branch. azb 0.8 does all
+of it: `AzookaBay::Client#with_login` (or `AZB_LOGIN_KEY_ID`,
+`AZB_LOGIN_KEY_SEED` and `AZB_LOGIN_URL` in `from_env`), and the site's
+calls and their answers stay as they were. (v0.12 logged people in at
+identity itself: `with_identity` and the site's key at identity are
+gone.)
 
-The site keeps its id, and holds a **second key**, its key at identity:
-AZB1 doesn't name the server a request is for, so one key at both would
-let a request signed for one be replayed at the other.
+The site keeps its id, and holds a **second key**, its key at its login
+service (from `azookabay-login-enroll site`): AZB1 doesn't name the
+server a request is for, so one key at both would let a request signed
+for one be replayed at the other. The site never calls identity.
 
-### At identity
+### At the login service
 
-Signed with the site's key at identity:
+Signed with the site's key at its login service:
 
 - `POST /v1/login/start`, `PUT /v1/site/login`: as at a branch (above).
-  The mail is the site's: its From, its look, landing on its page.
+  The mail is the site's: its From, its look, landing on its page, sent
+  by the service with the site's own mail key. For a person suspended or
+  closed at identity, the mail says so instead, with the operator's hold
+  copy, and carries no link or code; the answer is still
+  `202 {"ok":true}`, so the page shows what it always shows. With
+  identity out of reach, the mail goes anyway (identity refuses a held
+  person at verify regardless).
 - `POST /v1/login/verify`: as at a branch, and the answer carries a pass
-  for the site's branch:
+  for the site's branch, signed by identity and by the login service:
 
-  → `200 {"user_id":"<uuid>","email":"tom@example.com","redirect_path":"/midway","pass":"AZBP1.…"}`
+  → `200 {"user_id":"<uuid>","email":"tom@example.com","redirect_path":"/midway","pass":"AZBP2.…"}`
 
   A first login anywhere makes the person; their id is the same at every
-  branch. `user_inactive` (403): closed or suspended network-wide.
-  `branch_unavailable` (503): the site's branch is suspended at identity.
-- `GET /v1/whoami` → `{"site", "key", "branch", "service":"identity", "version"}`.
-- `GET /v1/stats`: identity's half of the site's numbers, its login mail
-  (`login_emails_sent`, `login_emails_failed`, `login_links_rejected`),
-  per window as at a branch. azb's `stats` adds them to the branch's.
+  branch. Errors besides a branch's:
+
+  | Error | Status | Meaning |
+  |---|---|---|
+  | `user_inactive` | 403 | closed or suspended network-wide |
+  | `branch_unavailable` | 503 | the site's branch is suspended at identity |
+  | `identity_unavailable` | 503 | identity didn't answer; the link or code is still good, try again |
+  | `pass_refused` | 502 | identity answered with a pass for something else; the service signed nothing (an operator's matter); the link or code is still good |
+
+- `GET /v1/whoami` → `{"site", "key", "service":"login", "version",
+  "identity": {"branch", "key", "version"}}`: `identity` is what identity
+  says of the service (the site's branch there, the service's key, its
+  version), or `null` when identity doesn't answer. A deploy checks the
+  branch's `whoami` names the same branch.
+- `GET /v1/stats`: the login service's half of the site's numbers, its
+  login mail (`login_emails_sent`, `login_emails_failed`,
+  `login_links_rejected`), per window as at a branch. azb's `stats` adds
+  them to the branch's.
 
 ### POST /v1/members/enter
 
@@ -315,16 +342,17 @@ At the branch, signed with the site's branch key, within five minutes of
 the login:
 
 ```json
-{"pass": "AZBP1.…"}
+{"pass": "AZBP2.…"}
 ```
 
 → `200 {"user_id":"<uuid>","email":"tom@example.com","replay":false}`
 
-The branch checks the pass (signed by identity, for this branch and this
-site, unexpired, never used by another), makes or refreshes the
+The branch checks the pass (signed by identity and by this site's login
+service, whose key the branch's operator enrolled; for this branch and
+this site, unexpired, never used by another), makes or refreshes the
 member's entry, joins them to the site's realm, and checks their
 standing there. **The site checks that the branch's `user_id` is the
-one identity's `login/verify` answered**, and refuses the login if not:
+one the login service's `login/verify` answered**, and refuses the login if not:
 who logged in is identity's word, so a branch, honest or not, can never
 hand the site another person's account (azb: `502 branch_mismatch`).
 Then the site sets its own session, as after `login/verify` before, as
@@ -334,14 +362,14 @@ azb retries once.
 
 | Error | Status | Meaning |
 |---|---|---|
-| `invalid_pass` | 403 | not identity's, for another branch or site, expired, or already used by another — log in again |
+| `invalid_pass` | 403 | not signed by identity and by this site's login service, for another branch or site, expired, or already used by another — log in again |
 | `account_mismatch` | 409 | the branch knows this person's email under another id, or the id under another email: refused, never repointed (an operator's matter) |
 | `user_inactive` | 403 | suspended or closed in this realm, at this branch, or at identity |
 | `identity_off` | 503 | this branch doesn't take passes |
 
-A branch whose people all log in at identity turns its own login off:
+A branch whose people all log in at their sites' login services turns its own login off:
 its `login/start`, `login/verify` and `site/login` then answer
-`410 {"error":"login_at_identity"}`.
+`410 {"error":"login_at_login_service"}`.
 
 ### Sessions, and hearing of a closure
 
@@ -380,6 +408,18 @@ file), purchases come only from Stripe's word (see Payments below), and
 `kind: "purchase"` here is refused with `403 purchase_via_checkout`.
 Grants are unaffected.
 
+**Issue limits** (since v0.13.0): the realm file may limit what a
+site issues of an asset on its own word, whatever the kind. `account_30d`
+is the most it may issue to one member in the last 30 days, and
+`site_24h` the most to everyone together in the last 24 hours, this
+request included. `GET /v1/whoami` shows a site its own, and
+`GET /v1/issue/allowance` (below) what's left of them. Past one, the
+issue is refused: `409 issue_limit_account` means this member has had
+their share for now; `409 issue_limit_site` means the site has given
+all it may today, and is a thing to tell the operator about. A retry of
+an issue that was made is still its replay, limit or not. Purchases on
+Stripe's word (Payments) aren't the site's and don't count.
+
 → `200 {"transaction_id": 42, "balance": 20, "replay": false}`
 
 | Error | Status |
@@ -392,7 +432,31 @@ Grants are unaffected.
 | `unknown_user` | 404 |
 | `idempotency_conflict` | 409 |
 | `issuance_exhausted` (the asset has issued all its books can count) | 409 |
+| `issue_limit_account` / `issue_limit_site` (above) | 409 |
 | `idempotency_mismatch` | 422 |
+
+## GET /v1/issue/allowance?asset=<asset>&user_id=<uuid>
+
+How much more the site may issue of the asset before its issue limits
+refuse it (since v0.13.0), so a site can say no before asking, or
+show its headroom. Requires `may_issue` on the asset. `user_id` is
+optional, and must be a member of the site's realm.
+
+→ `200 {"asset":"asset-…","site":{"limit":1000,"issued":60,"remaining":940},
+        "account":{"limit":20,"issued":10,"remaining":10}}`
+
+`site` is the 24-hour limit and `account` the member's 30-day one, each
+with what the site has issued in its window. Either is null when there's
+no such limit, and `account` is also null when no `user_id` is given.
+It's a hint: two issues can race between this read and the call, so
+`POST /v1/issue` is still the check. Not audited per call, like a
+balance read.
+
+| Error | Status |
+|---|---|
+| `missing_asset` / `bad_user_id` | 400 |
+| `capability_denied` | 403 |
+| `unknown_user` | 404 |
 
 ## POST /v1/spend
 
@@ -414,8 +478,8 @@ one where the original had none, is `422 idempotency_mismatch`.
 
 → `200 {"transaction_id": 43, "balance": 19, "replay": false}`
 
-Errors as for issue, minus `bad_kind`, `purchase_via_checkout` and
-`issuance_exhausted`, plus:
+Errors as for issue, minus `bad_kind`, `purchase_via_checkout`,
+`issuance_exhausted` and the issue limits, plus:
 
 | Error | Status |
 |---|---|

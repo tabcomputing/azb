@@ -68,12 +68,22 @@ azb.user(login.user_id).active             # standing in this realm (server v0.6
 azb.issue(user_id: login.user_id, asset: "bones", amount: 20,
           idempotency_key: "welcome-#{login.user_id}")
 
-# logging in at identity (server v0.12.0+): the site's second key, its key
-# at identity; logins go there, the pass to the branch, all else as before
-azb = AzookaBay::Client.from_env           # + AZB_IDENTITY_KEY_ID / AZB_IDENTITY_KEY_SEED [/ AZB_IDENTITY_URL]
-azb.identity?                              # true: login_start, login_verify(_code) and set_login go to identity
-azb.identity_whoami                        # proves the identity key end to end
-azb.stats                                  # the branch's numbers, with identity's login mail added
+# logging in at the site's own login service (server v0.13.0+): the site's
+# second key, its key there; logins go there, the pass to the branch, all
+# else as before (azb 0.8 replaces v0.12's with_identity / AZB_IDENTITY_*)
+azb = AzookaBay::Client.from_env           # + AZB_LOGIN_KEY_ID / AZB_LOGIN_KEY_SEED / AZB_LOGIN_URL
+azb.login?                                 # true: login_start, login_verify(_code) and set_login go to it
+azb.login_whoami["identity"]["branch"]     # proves the login key end to end; == azb.whoami["branch"]
+azb.stats                                  # the branch's numbers, with the login service's mail added
+
+# issue limits (server v0.13.0+): the operator caps what a site issues of
+# a coin, per member in 30 days and in all in 24 hours
+left = azb.issue_allowance("bones", login.user_id)   # a hint: left.account.try(&.remaining)
+begin
+  azb.issue(user_id: login.user_id, asset: "bones", amount: 5, idempotency_key: "prize-#{game_id}")
+rescue ex : AzookaBay::Client::Error
+  raise ex unless ex.issue_limit?          # capped: decline; the key stays unused
+end
 
 # the site's own login look (server v0.8.0+): push it on every deploy;
 # whole-set and idempotent, returns whether anything changed
