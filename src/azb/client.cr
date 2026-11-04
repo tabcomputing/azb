@@ -177,9 +177,25 @@ module AzookaBay
     # set_login go to the login service; a login's pass is handed to the
     # branch, which makes or refreshes the member there. Everything else
     # goes to the branch, as before. Returns self.
+    # The login service's address must be https, or plain http to this
+    # machine (a service beside the site, on loopback): its answers carry
+    # people's passes, which the branch takes as who they are, so one swapped
+    # on the wire would log someone in as another. Raises ConfigError.
     def with_login(key_id : String, seed : String | Bytes, url : String) : self
-      @login = Client.new(@site_id, key_id, seed, url, @connect_timeout, @read_timeout)
+      @login = Client.new(@site_id, key_id, seed, Client.login_url(url), @connect_timeout, @read_timeout)
       self
+    end
+
+    # url, checked as with_login wants it.
+    def self.login_url(url : String) : String
+      url = url.strip
+      uri = URI.parse(url)
+      host = uri.host
+      ok = host && !host.empty? &&
+           (uri.scheme == "https" ||
+            (uri.scheme == "http" && {"127.0.0.1", "localhost", "[::1]", "::1"}.includes?(host)))
+      raise ConfigError.new("AZB_LOGIN_URL must be https://host[:port] (or http:// to 127.0.0.1): it carries people's logins") unless ok
+      url
     end
 
     # Whether logins go to the site's login service.

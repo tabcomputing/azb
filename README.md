@@ -72,6 +72,7 @@ azb.issue(user_id: login.user_id, asset: "bones", amount: 20,
 # second key, its key there; logins go there, the pass to the branch, all
 # else as before (azb 0.8 replaces v0.12's with_identity / AZB_IDENTITY_*)
 azb = AzookaBay::Client.from_env           # + AZB_LOGIN_KEY_ID / AZB_LOGIN_KEY_SEED / AZB_LOGIN_URL
+                                           #   (https, or http:// only to 127.0.0.1)
 azb.login?                                 # true: login_start, login_verify(_code) and set_login go to it
 azb.login_whoami["identity"]["branch"]     # proves the login key end to end; == azb.whoami["branch"]
 azb.stats                                  # the branch's numbers, with the login service's mail added

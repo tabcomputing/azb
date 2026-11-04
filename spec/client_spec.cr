@@ -490,8 +490,18 @@ describe "AzookaBay::Client with a login service" do
       ENV["AZB_LOGIN_KEY_ID"] = "ps-login-1"
       ENV["AZB_LOGIN_KEY_SEED"] = LOGIN_SEED
       expect_raises(AzookaBay::Client::ConfigError, /go together/) { AzookaBay::Client.from_env }
+      ENV["AZB_LOGIN_URL"] = "http://login.example.test"
+      expect_raises(AzookaBay::Client::ConfigError, /AZB_LOGIN_URL must be https/) { AzookaBay::Client.from_env }
       ENV["AZB_LOGIN_URL"] = "https://login.example.test"
       AzookaBay::Client.from_env.login?.should be_true
+      # in the clear only to this machine: a service beside the site
+      bare = AzookaBay::Client.new("pirate-ship", "ps-1", SEED)
+      {"http://10.0.0.5:17306", "http://login.example.test", "ftp://login.example.test", "login.example.test"}.each do |url|
+        expect_raises(AzookaBay::Client::ConfigError, /AZB_LOGIN_URL must be https/) { bare.with_login("ps-login-1", LOGIN_SEED, url) }
+      end
+      {"http://127.0.0.1:17306", "http://localhost:17306", "http://[::1]:17306", "https://login.example.test/"}.each do |url|
+        bare.with_login("ps-login-1", LOGIN_SEED, url).login?.should be_true
+      end
       ENV["AZB_IDENTITY_KEY_ID"] = "ps-id-1"
       expect_raises(AzookaBay::Client::ConfigError, /AZB_IDENTITY_KEY_ID is gone since azb 0.8/) { AzookaBay::Client.from_env }
       expect_raises(AzookaBay::Client::ConfigError, /no login service/) do

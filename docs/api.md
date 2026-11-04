@@ -55,10 +55,10 @@ Bay's (since v0.9.2), so a deploy can confirm what it put in place.
 people in itself; `own_login` says whether its own login endpoints are
 on (both since v0.12.0).
 
-→ `200 {"site":"pirate-ship","key":"pirate-ship-20260726-b0c3",
-        "realm":"silicon-circus","capabilities":{"scc":["issue","spend"]},
-        "issue_limits":{"scc":{"account_30d":20,"site_24h":1000}},
-        "version":"0.12.0","branch":"games","own_login":true}`
+→ `200 {"site":"site-9hb4tq1zc6","key":"site-9hb4tq1zc6-20260726-b0c3",
+        "realm":"realm-3kq8m2xw7p","capabilities":{"asset-5tn2wq8rk4":["issue","spend"]},
+        "issue_limits":{"asset-5tn2wq8rk4":{"account_30d":20,"site_24h":1000}},
+        "version":"0.13.0","branch":"branch-7cz3pw9e1n","own_login":false}`
 
 Permissions are `issue`, `spend`, `exchange` and `sell`. `issue_limits`
 (since v0.13.0) lists the assets the site's issues are limited on,
@@ -392,7 +392,7 @@ answer it goes on what it has. So:
 Mint asset to a user. Requires `may_issue` on the asset.
 
 ```json
-{"user_id": "<uuid>", "asset": "scc", "amount": 20,
+{"user_id": "<uuid>", "asset": "asset-5tn2wq8rk4", "amount": 20,
  "idempotency_key": "stripe_cs_123", "kind": "purchase",
  "description": "$5.00 -> 20 circus tokens", "metadata": {"stripe_session": "cs_123"}}
 ```
@@ -449,8 +449,10 @@ optional, and must be a member of the site's realm.
 with what the site has issued in its window. Either is null when there's
 no such limit, and `account` is also null when no `user_id` is given.
 It's a hint: two issues can race between this read and the call, so
-`POST /v1/issue` is still the check. Not audited per call, like a
-balance read.
+`POST /v1/issue` is still the check. It counts the limits only: a member
+who is suspended or closed in the realm still gets their figures, and
+`POST /v1/issue` refuses them (`403 user_inactive`). The 30 days are 720
+hours, rolling. Not audited per call, like a balance read.
 
 | Error | Status |
 |---|---|
@@ -463,7 +465,7 @@ balance read.
 One-call debit — the arcade path. Requires `may_spend`.
 
 ```json
-{"user_id": "<uuid>", "asset": "scc", "amount": 1,
+{"user_id": "<uuid>", "asset": "asset-5tn2wq8rk4", "amount": 1,
  "idempotency_key": "play_9f3a", "sku": "skee-ball", "description": "arcade play"}
 ```
 
@@ -520,7 +522,7 @@ realm, **balances only**. No `flows` aggregate and no `hold`, so it is
 flat regardless of ledger history: a handful of indexed rows. This is the
 arcade cabinet wallet.
 
-→ `200 {"user_id":"<uuid>","realm":"silicon-circus","balances":{"scc":22}}`
+→ `200 {"user_id":"<uuid>","realm":"realm-3kq8m2xw7p","balances":{"asset-5tn2wq8rk4":22}}`
 
 For the coin drop itself use **`/v1/spend`** — attempting the spend IS
 the balance check (race-free), and its response already carries the new
@@ -545,10 +547,10 @@ discount ladders are venue policy computed from
 
 → `200`
 ```json
-{"user_id": "<uuid>", "realm": "silicon-circus",
+{"user_id": "<uuid>", "realm": "realm-3kq8m2xw7p",
  "hold": null,
- "balances": {"scc": 25},
- "flows": {"scc": {"purchase": 20, "grant": 5, "spend": -1, "reversal": 1}}}
+ "balances": {"asset-5tn2wq8rk4": 25},
+ "flows": {"asset-5tn2wq8rk4": {"purchase": 20, "grant": 5, "spend": -1, "reversal": 1}}}
 ```
 
 | Error | Status |
@@ -575,7 +577,7 @@ session. At a branch that takes passes it may first ask identity about
 them, once a day at most and for a second at most ("Sessions, and
 hearing of a closure", above).
 
-→ `200 {"user_id":"<uuid>","realm":"silicon-circus","active":true,"hold":null,"member_since":"2026-10-01T12:00:00Z"}`
+→ `200 {"user_id":"<uuid>","realm":"realm-3kq8m2xw7p","active":true,"hold":null,"member_since":"2026-10-01T12:00:00Z"}`
 
 When inactive, `"active": false` and `hold` is
 `{"message": ..., "url": ...}`. That copy is authored by Azooka Bay
@@ -597,7 +599,7 @@ Realm-scoped shared metadata — what every venue in the realm agrees on
 about a user (display name, level, preferences). Scoped to the calling
 site's realm; other realms' entries are invisible.
 
-→ `200 {"user_id":"<uuid>","realm":"silicon-circus","hold":null,"profile":{"display_name":"Captain Tom","level":3}}`
+→ `200 {"user_id":"<uuid>","realm":"realm-3kq8m2xw7p","hold":null,"profile":{"display_name":"Captain Tom","level":3}}`
 
 `hold` is the same side-effect-free inactive signal documented under
 `/v1/valuables` — `null`/absent when active, an object otherwise.
@@ -643,7 +645,7 @@ people in at identity, the login mail is counted there (identity's
 
 → `200`
 ```json
-{"site": "silicon-circus-web", "as_of": "2026-09-29T23:10:00Z",
+{"site": "site-9hb4tq1zc6", "as_of": "2026-09-29T23:10:00Z",
  "windows": {
    "15m": {"users_logged_in": 4, "new_users": 1, "login_emails_sent": 5,
            "login_emails_failed": 0, "login_links_rejected": 1, "users_transacting": 3},
@@ -718,15 +720,15 @@ The realm's active SKUs of assets the calling site may sell, cheapest
 first, and the publishable key the page mounts Stripe's form with. A
 display read: not audited per hit.
 
-→ `200 {"realm":"silicon-circus","publishable_key":"pk_live_…",
-        "skus":[{"id":"coins-20","name":"20 Circus Coins","asset":"scc","quantity":20,"cents":500}]}`
+→ `200 {"realm":"realm-3kq8m2xw7p","publishable_key":"pk_live_…",
+        "skus":[{"id":"sku-6pr3kz9wn5","name":"20 Circus Coins","asset":"asset-5tn2wq8rk4","quantity":20,"cents":500}]}`
 
 `404 not_selling`: the realm doesn't sell through Azooka Bay.
 
 ### POST /v1/checkout
 
 ```json
-{"user_id": "<uuid>", "sku": "coins-20", "ui": "embedded", "idempotency_key": "buy-7f3a"}
+{"user_id": "<uuid>", "sku": "sku-6pr3kz9wn5", "ui": "embedded", "idempotency_key": "buy-7f3a"}
 ```
 
 `ui`: `"embedded"` or `"hosted"` (the default). The user must be an active
@@ -777,8 +779,8 @@ the buyer is suspended, it's refused.
 Only the site that opened the checkout can see it, and only while the
 buyer is a member of its realm (`404 unknown_user` once they aren't).
 
-→ `200 {"session_id":"cs_live_…","user_id":"<uuid>","status":"settled","sku":"coins-20",
-        "asset":"scc","quantity":20,"amount_cents":500,"currency":"usd",
+→ `200 {"session_id":"cs_live_…","user_id":"<uuid>","status":"settled","sku":"sku-6pr3kz9wn5",
+        "asset":"asset-5tn2wq8rk4","quantity":20,"amount_cents":500,"currency":"usd",
         "transaction_id":88,"balance":120,"settled_at":"2026-10-21T17:04:51Z"}`
 
 `user_id` is the buyer: a return page shows a purchase only to them (a
@@ -824,7 +826,7 @@ not for checking on a timer.
 `limit`: 1 to 500 entries, 100 if left out.
 
 → `200 {"payments":[{"seq":1794647560431,"payment_id":12,"session_id":"cs_live_…","user_id":"<uuid>",
-         "status":"refunded","sku":"coins-20","asset":"scc","quantity":20,
+         "status":"refunded","sku":"sku-6pr3kz9wn5","asset":"asset-5tn2wq8rk4","quantity":20,
          "amount_cents":500,"currency":"usd","transaction_id":88,
          "at":"2026-11-14T09:12:40Z"}],
         "next":1794647560431,"more":false}`
@@ -963,20 +965,20 @@ the `PUT`; AB's encryption then wraps ciphertext it cannot open.
 ```json
 {"user_id": "<uuid>", "box": "birthday", "value": "1990-06-15"}
 ```
-→ `200 {"user_id":"<uuid>","realm":"silicon-circus","box":"birthday","updated_at":"..."}`
+→ `200 {"user_id":"<uuid>","realm":"realm-3kq8m2xw7p","box":"birthday","updated_at":"..."}`
 
 Creates or replaces. Needs `write` on the label and an active user.
 
 ### GET /v1/vault?user_id=<uuid>&box=<label>
 
-→ `200 {"user_id":"<uuid>","realm":"silicon-circus","box":"birthday","value":"1990-06-15","updated_at":"..."}`
+→ `200 {"user_id":"<uuid>","realm":"realm-3kq8m2xw7p","box":"birthday","value":"1990-06-15","updated_at":"..."}`
 
 `value` and `updated_at` are `null` when the box is empty. Needs `read`.
 Works for inactive users.
 
 ### DELETE /v1/vault?user_id=<uuid>&box=<label>
 
-→ `200 {"user_id":"<uuid>","realm":"silicon-circus","box":"birthday","deleted":true}`
+→ `200 {"user_id":"<uuid>","realm":"realm-3kq8m2xw7p","box":"birthday","deleted":true}`
 
 `deleted: false` when there was nothing to delete. Needs `write`. Works
 for inactive users, and on a box that no longer opens, because nothing is
