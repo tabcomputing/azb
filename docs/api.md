@@ -232,7 +232,7 @@ with the values. The operator can apply the same with
  "fallback_subject": "The words fade",
  "fallback_body": "The words would not take. Touch them instead: {link}",
  "email_image": "/mail/crest.png",
- "email_image_alt": "The Overlore crest"}
+ "email_image_alt": "The Pirate Ship crest"}
 ```
 
 | Field | |
@@ -268,7 +268,8 @@ email copy, label "code"), so always send the full presentation.
   the origin of the site's landing page, which only the operator sets, so a
   site's key can't make a login email load from anywhere else. Serve the
   file there, publicly, at twice its shown width: it shows 120 pixels wide,
-  so 240. It's on the login and link-instead emails, never on a hold email,
+  so 240. Keep it a fixed file: AB can't see what's served there, so never
+  use a path people can upload to, or one that redirects. It's on the login and link-instead emails, never on a hold email,
   and it's never a link. The plain-text part leaves it out. Where a mail
   app blocks images (Outlook on the desktop, until the reader allows them),
   the alt text shows instead, so it can't contain addresses either.

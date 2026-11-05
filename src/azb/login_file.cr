@@ -15,7 +15,7 @@ module AzookaBay
   #   label: Magic Word
   #   email: { subject: "Your Magic Word, mortal", body_file: email-body.txt }
   #   fallback_email: { subject: "The Magic Link, mortal", body_file: fallback-body.txt }
-  #   email_image: { path: /mail/crest.png, alt: The Overlore crest }
+  #   email_image: { path: /mail/crest.png, alt: The Pirate Ship crest }
   #
   # `email_image` is a small image at the head of the site's login emails:
   # a path on the site's own address, not an address (server v0.14.0+). The
