@@ -174,7 +174,7 @@ as the fallback below.
   where the mail client allows it (Apple Mail, iOS). A real copy button is
   impossible because mail clients strip script. The subject and body can
   be the site's own (in character), and Azooka Bay always adds its safety
-  lines ("never share your …", "didn't ask for this?").
+  lines ("type your … only where you asked for it", "didn't ask for this?").
 - With method `both`, redeeming the link kills the code and vice versa.
   If you also raise `login_max_redemptions` for mail scanners, redeem
   links on a user gesture or in JavaScript, or a scanner's prefetch will
