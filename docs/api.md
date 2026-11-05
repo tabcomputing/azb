@@ -580,10 +580,14 @@ hearing of a closure", above).
 → `200 {"user_id":"<uuid>","realm":"realm-3kq8m2xw7p","active":true,"hold":null,"member_since":"2026-10-01T12:00:00Z"}`
 
 When inactive, `"active": false` and `hold` is
-`{"message": ..., "url": ...}`. That copy is authored by Azooka Bay
-*for the user*; render it verbatim. Sites learn **whether**, never
-**why**: suspended and closed, network-wide or in this realm, all look
-the same.
+`{"message": ..., "url": ...}`. That copy is authored by Azooka Bay's
+operator *for the user*; render it verbatim. Either may be null: then
+say it in your own words, and how to reach you. A person held at
+identity (every site, every branch) gets this branch's copy if it has
+one, else none: identity's word is the status only (since v0.13.1), so
+nobody holding identity can put words on your pages. Sites learn
+**whether**, never **why**: suspended and closed, network-wide or in
+this realm, all look the same.
 
 Like `/v1/balance`, a *successful* read is a display poll and is not
 audited per-hit; its denials are.

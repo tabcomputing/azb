@@ -281,8 +281,10 @@ module AzookaBay
     record Reversal, transaction_id : Int64, reversed_id : Int64, replay : Bool
     record Award, award_id : Int64, collectible : String, copy_no : Int32, replay : Bool
     # A member's standing in the calling site's realm (server v0.6.0+,
-    # GET /v1/user). `hold` is opaque JSON (render message/url verbatim; a
-    # site learns WHETHER, never WHY), nil when active.
+    # GET /v1/user). `hold` is opaque JSON (render message/url verbatim,
+    # and when either is null, say it in your own words: a hold from
+    # identity carries none; a site learns WHETHER, never WHY), nil when
+    # active.
     record Standing, user_id : String, realm : String, active : Bool,
       hold : JSON::Any?, member_since : String?
     # `hold` is the account-inactive signal (server v0.4.1+): nil when the
