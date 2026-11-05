@@ -230,7 +230,9 @@ with the values. The operator can apply the same with
  "email_subject": "The scroll stirs for {site}",
  "email_body": "The ink resolves into words:\n\n{code}\n\nSpeak them at the gate within {minutes} minutes.",
  "fallback_subject": "The words fade",
- "fallback_body": "The words would not take. Touch them instead: {link}"}
+ "fallback_body": "The words would not take. Touch them instead: {link}",
+ "email_image": "/mail/crest.png",
+ "email_image_alt": "The Overlore crest"}
 ```
 
 | Field | |
@@ -241,6 +243,7 @@ with the values. The operator can apply the same with
 | `label` | what the email calls the code, 1–40 characters |
 | `email_subject`, `email_body` | templates (see [Typed login codes](#typed-login-codes-the-magic-word)) |
 | `fallback_subject`, `fallback_body` | the link-instead email's templates (code methods only) |
+| `email_image`, `email_image_alt` | a small image at the head of the login emails, and its alt text of 1–100 characters; both or neither (server v0.14.0+) |
 
 → `200 {"changed": true}`, or `{"changed": false}` when it was already
 so. **Whole-set:** an omitted field returns to its default (AB's default
@@ -259,6 +262,16 @@ email copy, label "code"), so always send the full presentation.
   is the one AB puts at `{link}`, on the site's own landing page. In prose,
   put a space after a period: `Speak.Now` reads as a domain. No control
   characters; valid UTF-8.
+- **An email image is a path, never an address,** such as `/mail/crest.png`:
+  a `.png`, `.jpg` or `.gif` with no query string (SVG doesn't show in
+  Gmail or Outlook). AB fetches nothing. The email points at that path on
+  the origin of the site's landing page, which only the operator sets, so a
+  site's key can't make a login email load from anywhere else. Serve the
+  file there, publicly, at twice its shown width: it shows 120 pixels wide,
+  so 240. It's on the login and link-instead emails, never on a hold email,
+  and it's never a link. The plain-text part leaves it out. Where a mail
+  app blocks images (Outlook on the desktop, until the reader allows them),
+  the alt text shows instead, so it can't contain addresses either.
 - A real change is audited (`site_login`, with the key that made it) with
   the templates' full text, so what the emails said stays on record; an
   unchanged push writes nothing. At most 30 changes per site per 24 hours.

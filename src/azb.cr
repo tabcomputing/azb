@@ -14,5 +14,5 @@ require "./azb/signing"
 require "./azb/client"
 
 module Azb
-  VERSION = "0.8.1"
+  VERSION = "0.9.0"
 end

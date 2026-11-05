@@ -449,10 +449,13 @@ module AzookaBay
     # The server validates it all (strength floor, prefix-free vocabulary,
     # templates) and refuses with 400 invalid_login_settings and the reason.
     # The landing URL and From address are the operator's: not settable here.
+    # email_image and its alt text (server v0.14.0+): a small image at the
+    # head of the login emails, a path on the site's own address.
     def set_login(method : String, *, code_style : String? = nil, code_length : Int32? = nil,
                   vocab : Array(String)? = nil, separator : String? = nil, label : String? = nil,
                   email_subject : String? = nil, email_body : String? = nil,
-                  fallback_subject : String? = nil, fallback_body : String? = nil) : Bool
+                  fallback_subject : String? = nil, fallback_body : String? = nil,
+                  email_image : String? = nil, email_image_alt : String? = nil) : Bool
       payload = {"method" => JSON::Any.new(method)}
       payload["code_style"] = JSON::Any.new(code_style) if code_style
       payload["code_length"] = JSON::Any.new(code_length.to_i64) if code_length
@@ -463,6 +466,8 @@ module AzookaBay
       payload["email_body"] = JSON::Any.new(email_body) if email_body
       payload["fallback_subject"] = JSON::Any.new(fallback_subject) if fallback_subject
       payload["fallback_body"] = JSON::Any.new(fallback_body) if fallback_body
+      payload["email_image"] = JSON::Any.new(email_image) if email_image
+      payload["email_image_alt"] = JSON::Any.new(email_image_alt) if email_image_alt
       logins.put("/v1/site/login", payload)["changed"].as_bool
     end
 

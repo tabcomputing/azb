@@ -15,6 +15,11 @@ module AzookaBay
   #   label: Magic Word
   #   email: { subject: "Your Magic Word, mortal", body_file: email-body.txt }
   #   fallback_email: { subject: "The Magic Link, mortal", body_file: fallback-body.txt }
+  #   email_image: { path: /mail/crest.png, alt: The Overlore crest }
+  #
+  # `email_image` is a small image at the head of the site's login emails:
+  # a path on the site's own address, not an address (server v0.14.0+). The
+  # file stays on the site, so it isn't read here.
   #
   # `vocab:` and `body:` may be given inline instead of as files (not
   # both). A vocabulary file has one entry per line; blank lines and lines
@@ -34,10 +39,13 @@ module AzookaBay
     getter email_body : String?
     getter fallback_subject : String?
     getter fallback_body : String?
+    getter email_image : String?
+    getter email_image_alt : String?
 
     def initialize(@method, @code_style = nil, @code_length = nil, @vocab = nil, @separator = nil,
                    @label = nil, @email_subject = nil, @email_body = nil,
-                   @fallback_subject = nil, @fallback_body = nil)
+                   @fallback_subject = nil, @fallback_body = nil,
+                   @email_image = nil, @email_image_alt = nil)
     end
 
     # The YAML as written.
@@ -51,6 +59,7 @@ module AzookaBay
       getter label : String? = nil
       getter email : EmailDoc? = nil
       getter fallback_email : EmailDoc? = nil
+      getter email_image : ImageDoc? = nil
     end
 
     # :nodoc:
@@ -73,6 +82,15 @@ module AzookaBay
       getter subject : String? = nil
       getter body : String? = nil
       getter body_file : String? = nil
+    end
+
+    # :nodoc:
+    struct ImageDoc
+      include YAML::Serializable
+      include YAML::Serializable::Strict
+
+      getter path : String
+      getter alt : String
     end
 
     # confine: the files it names must lie inside the YAML's own directory
@@ -98,7 +116,8 @@ module AzookaBay
       vocab = code.try { |c| vocab_of(c, dir, path, confine) }
       new(doc.method, code.try(&.style), code.try(&.length), vocab, code.try(&.separator), doc.label,
         doc.email.try(&.subject), doc.email.try { |e| body_of(e, "email", dir, path, confine) },
-        doc.fallback_email.try(&.subject), doc.fallback_email.try { |e| body_of(e, "fallback_email", dir, path, confine) })
+        doc.fallback_email.try(&.subject), doc.fallback_email.try { |e| body_of(e, "fallback_email", dir, path, confine) },
+        doc.email_image.try(&.path), doc.email_image.try(&.alt))
     end
 
     private def self.unique_keys!(node : YAML::Nodes::Node, path : String, at : String = "") : Nil
@@ -161,7 +180,8 @@ module AzookaBay
       f = LoginFile.load(path)
       set_login(f.method, code_style: f.code_style, code_length: f.code_length, vocab: f.vocab,
         separator: f.separator, label: f.label, email_subject: f.email_subject, email_body: f.email_body,
-        fallback_subject: f.fallback_subject, fallback_body: f.fallback_body)
+        fallback_subject: f.fallback_subject, fallback_body: f.fallback_body,
+        email_image: f.email_image, email_image_alt: f.email_image_alt)
     end
   end
 end

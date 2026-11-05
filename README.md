@@ -127,6 +127,7 @@ code: { style: vocab, length: 4, vocab_file: magic-words.txt, separator: "-" }
 label: Magic Word
 email: { subject: "The scroll stirs for {site}", body_file: email-body.txt }
 fallback_email: { subject: "The words fade", body_file: fallback-body.txt }
+email_image: { path: /mail/crest.png, alt: The Pirate Ship crest }   # optional; server v0.14.0+
 ```
 
 ```crystal

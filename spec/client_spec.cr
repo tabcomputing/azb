@@ -222,6 +222,15 @@ describe AzookaBay::Client do
     end
   end
 
+  it "sends the email image only when there is one" do
+    with_bay do |client, bay|
+      client.set_login("link", email_image: "/mail/crest.png", email_image_alt: "The crest").should be_true
+      sent = JSON.parse(bay.last_body.not_nil!).as_h
+      sent.keys.sort.should eq %w(email_image email_image_alt method)
+      sent["email_image"].as_s.should eq "/mail/crest.png"
+    end
+  end
+
   it "pushes a login file as the same PUT" do
     with_bay do |client, bay|
       dir = File.tempname("azb-login")
@@ -234,6 +243,7 @@ describe AzookaBay::Client do
           code: { style: vocab, length: 4, vocab_file: words.txt }
           label: Magic Word
           email: { body_file: body.txt }
+          email_image: { path: /mail/crest.png, alt: The crest }
           YAML
         client.set_login_file(File.join(dir, "login.yml")).should be_true
       ensure
@@ -242,7 +252,7 @@ describe AzookaBay::Client do
       bay.verified.should be_true
       bay.last_path.should eq "/v1/site/login"
       sent = JSON.parse(bay.last_body.not_nil!).as_h
-      sent.keys.sort.should eq %w(code_length code_style email_body label method vocab)
+      sent.keys.sort.should eq %w(code_length code_style email_body email_image email_image_alt label method vocab)
       sent["vocab"].as_a.map(&.as_s).should eq %w(ka zo mi)
       sent["email_body"].as_s.should eq "Words: {code}"
     end

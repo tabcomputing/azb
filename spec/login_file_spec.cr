@@ -56,6 +56,22 @@ describe AzookaBay::LoginFile do
     end
   end
 
+  it "reads the email image as a path and its alt text, reading no file for it" do
+    in_dir do |dir|
+      path = File.join(dir, "login.yml")
+      File.write(path, "method: link\nemail_image: { path: /mail/crest.png, alt: The crest }\n")
+      f = AzookaBay::LoginFile.load(path, confine: true)
+      f.email_image.should eq "/mail/crest.png"
+      f.email_image_alt.should eq "The crest"
+      File.write(path, "method: link\n")
+      AzookaBay::LoginFile.load(path).email_image.should be_nil
+      File.write(path, "method: link\nemail_image: { path: /mail/crest.png }\n")
+      expect_raises(AzookaBay::LoginFile::Error, /line 2/) { AzookaBay::LoginFile.load(path) }
+      File.write(path, "method: link\nemail_image: { path: /mail/crest.png, alt: A, width: 300 }\n")
+      expect_raises(AzookaBay::LoginFile::Error, /line 2/) { AzookaBay::LoginFile.load(path) }
+    end
+  end
+
   it "needs only a method for plain links" do
     in_dir do |dir|
       File.write(File.join(dir, "login.yml"), "method: link\n")
