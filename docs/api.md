@@ -58,7 +58,7 @@ on (both since v0.12.0).
 → `200 {"site":"site-9hb4tq1zc6","key":"site-9hb4tq1zc6-20260726-b0c3",
         "realm":"realm-3kq8m2xw7p","capabilities":{"asset-5tn2wq8rk4":["issue","spend"]},
         "issue_limits":{"asset-5tn2wq8rk4":{"account_30d":20,"site_24h":1000}},
-        "version":"0.13.1","branch":"branch-7cz3pw9e1n","own_login":false}`
+        "version":"0.14.0","branch":"branch-7cz3pw9e1n","own_login":false}`
 
 Permissions are `issue`, `spend`, `exchange` and `sell`. `issue_limits`
 (since v0.13.0) lists the assets the site's issues are limited on,
