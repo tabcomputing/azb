@@ -77,6 +77,15 @@ azb.login?                                 # true: login_start, login_verify(_co
 azb.login_whoami["identity"]["branch"]     # proves the login key end to end; == azb.whoami["branch"]
 azb.stats                                  # the branch's numbers, with the login service's mail added
 
+# a login handed on (server v0.17.0+): one login at this site lets the
+# person into other sites of the realm that take its logins (both
+# operators say which). Carry each pass to its site's server, never in a URL.
+login = azb.login_verify(token, passes_for: ["site-4kq7w2m9xa"])
+login.passes                               # {"site-4kq7w2m9xa" => "AZBP2.…"}
+login.pass_errors                          # {"site-x" => "handoff_refused"}, for each without one
+# ...and at the other site's server, with its own keys:
+login = other_azb.enter(pass)              # entered once at its branch; never retried
+
 # issue limits (server v0.13.0+): the operator caps what a site issues of
 # a coin, per member in 30 days and in all in 24 hours
 left = azb.issue_allowance("bones", login.user_id)   # a hint: left.account.try(&.remaining)

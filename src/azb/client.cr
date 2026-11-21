@@ -276,7 +276,12 @@ module AzookaBay
 
     # ── Endpoints (docs/api.md) ───────────────────────────────────────────────
 
-    record Login, user_id : String, email : String, redirect_path : String?
+    # passes and pass_errors: a login handed on (`passes_for`, server
+    # v0.17.0+), by site: a pass for each other site, to carry to it, or
+    # why none was made. Empty otherwise.
+    record Login, user_id : String, email : String, redirect_path : String?,
+      passes : Hash(String, String) = {} of String => String,
+      pass_errors : Hash(String, String) = {} of String => String
     record Transaction, transaction_id : Int64, balance : Int64, replay : Bool
     record Reversal, transaction_id : Int64, reversed_id : Int64, replay : Bool
     record Award, award_id : Int64, collectible : String, copy_no : Int32, replay : Bool
@@ -389,16 +394,70 @@ module AzookaBay
     # Redeem the token from the emailed link. The first successful verify CREATES
     # the user; afterwards Azooka Bay plays no part in the session — that is the
     # calling site's to own.
-    def login_verify(token : String) : Login
-      verify({"token" => token})
+    #
+    # passes_for (server v0.17.0+, at a login service only): other sites of
+    # the realm to hand this login on to, so the person needn't log in at
+    # each (docs/api.md, "A login handed on"). Each site's pass comes back
+    # in `passes`, for this site to carry to it; a site that doesn't take
+    # this site's logins is in `pass_errors` (handoff_refused), and the
+    # login itself goes ahead. At most 4. Without a login service it raises
+    # ConfigError: a branch's own login makes no passes.
+    def login_verify(token : String, passes_for : Array(String)? = nil) : Login
+      verify({"token" => token}, passes_for)
     end
 
     # Redeem a typed login code (server v0.7.0+): the code from the email,
     # as the user typed it (case, spaces and hyphens don't matter), with the
     # address it was sent to. Every failure is the same 401 invalid_code —
     # wrong, used, expired, too many tries — so show one message for all.
-    def login_verify_code(email : String, code : String) : Login
-      verify({"email" => email, "code" => code})
+    # passes_for: as for login_verify.
+    def login_verify_code(email : String, code : String, passes_for : Array(String)? = nil) : Login
+      verify({"email" => email, "code" => code}, passes_for)
+    end
+
+    # A login handed on (server v0.17.0+): another site of this realm
+    # logged the person in and asked for a pass for this site
+    # (`passes_for`, there), and the pass has been brought here: from that
+    # site's page to this site's, then to this site's server. Hand it over
+    # here, and the branch checks it, makes or refreshes the member, and
+    # checks their standing, as at a login of this site's own
+    # (user_inactive). Then open this site's own session for the user.
+    #
+    # The branch takes a pass from another site's login only where this
+    # site's realm file says it takes that site's logins, and a pass handed
+    # on enters ONCE: brought again, even by this site, it's refused
+    # (invalid_pass). So this call isn't retried: on a TransportError, the
+    # person logs in again at the other site. Who it is, is the pass's
+    # word, read here to check the branch's answer (branch_mismatch), never
+    # trusted for more: only the branch checks its signatures. A pass for
+    # another site, or one that isn't a pass at all, is refused here
+    # (invalid_pass) without asking the branch.
+    def enter(pass : String) : Login
+      named = Client.pass_fields(pass)
+      unless named && named[2] == @site_id
+        raise Error.new(403, "invalid_pass", "azooka bay: invalid_pass: #{named ? "a pass for another site" : "not a pass"}")
+      end
+      user_id, email, _ = named
+      entered = post("/v1/members/enter", {"pass" => pass})
+      unless entered["user_id"]?.try(&.as_s?) == user_id
+        raise Error.new(502, "branch_mismatch", "the branch answered a pass for #{user_id} with another user; refused")
+      end
+      Login.new(user_id, entered["email"]?.try(&.as_s?) || email, nil)
+    end
+
+    # The user id, email and site a pass names (AZBP2: its fields, read
+    # without checking a signature), or nil if it isn't one.
+    def self.pass_fields(pass : String) : {String, String, String}?
+      return nil unless pass.bytesize <= 2048
+      parts = pass.split('.')
+      return nil unless parts.size == 4 && parts[0] == "AZBP2" && parts[1].matches?(/\A[A-Za-z0-9_-]+\z/)
+      fields = String.new(Base64.decode(parts[1]))
+      return nil unless fields.valid_encoding?
+      f = fields.split('\n')
+      return nil unless f.size == 10 && !f[3].empty? && !f[4].empty? && !f[5].empty?
+      {f[3], f[4], f[5]}
+    rescue Base64::Error
+      nil
     end
 
     # At a login service, a login answers with a pass for this site's
@@ -412,9 +471,18 @@ module AzookaBay
     # answer with the user the pass names, or the login is refused
     # (branch_mismatch), so a branch, honest or not, can never hand the
     # site another person's account.
-    private def verify(payload : Hash(String, String)) : Login
+    private def verify(fields : Hash(String, String), passes_for : Array(String)?) : Login
       service = @login
-      return login(post("/v1/login/verify", payload)) unless service
+      unless service
+        if passes_for
+          raise ConfigError.new("passes_for needs a login service (with_login, or AZB_LOGIN_* in from_env): " \
+                                "a branch's own login makes no passes")
+        end
+        return login(post("/v1/login/verify", fields))
+      end
+      payload = {} of String => String | Array(String)
+      fields.each { |k, v| payload[k] = v }
+      payload["passes_for"] = passes_for if passes_for
       r = service.post("/v1/login/verify", payload)
       pass = r["pass"]?.try(&.as_s?)
       user_id = r["user_id"]?.try(&.as_s?)
@@ -430,7 +498,13 @@ module AzookaBay
       unless entered["user_id"]?.try(&.as_s?) == user_id
         raise Error.new(502, "branch_mismatch", "the branch answered a pass for #{user_id} with another user; refused")
       end
-      Login.new(user_id, email, r["redirect_path"]?.try(&.as_s?))
+      Login.new(user_id, email, r["redirect_path"]?.try(&.as_s?), strings(r["passes"]?), strings(r["pass_errors"]?))
+    end
+
+    private def strings(any : JSON::Any?) : Hash(String, String)
+      h = {} of String => String
+      any.try(&.as_h?).try &.each { |k, v| v.as_s?.try { |sv| h[k] = sv } }
+      h
     end
 
     private def login(r : JSON::Any) : Login

@@ -386,7 +386,8 @@ end
 private LOGIN_SEED = "2".rjust(64, '0')
 
 private def with_login_service(enter_delay : Time::Span = Time::Span.zero, entered_as : String = "u-1",
-                               login_stats : Int32 = 200, &block : AzookaBay::Client, FakeBay, FakeBay -> Nil)
+                               login_stats : Int32 = 200, handed : Bool = false,
+                               &block : AzookaBay::Client, FakeBay, FakeBay -> Nil)
   branch_key = AzookaBay::Ed25519::SigningKey.new(SEED.hexbytes)
   login_key = AzookaBay::Ed25519::SigningKey.new(LOGIN_SEED.hexbytes)
   entries = 0
@@ -396,7 +397,13 @@ private def with_login_service(enter_delay : Time::Span = Time::Span.zero, enter
     when "/v1/whoami"
       {200, %({"site":"pirate-ship","key":"ps-login-1","service":"login","version":"0.13.0","identity":{"branch":"games","key":"ls-1","version":"0.13.0"}})}
     when "/v1/login/start"  then {202, %({"ok":true})}
-    when "/v1/login/verify" then {200, %({"user_id":"u-1","email":"tom@example.com","redirect_path":"/midway","pass":"AZBP2.fields.idsig.loginsig"})}
+    when "/v1/login/verify"
+      if handed
+        {200, %({"user_id":"u-1","email":"tom@example.com","redirect_path":"/midway","pass":"AZBP2.fields.idsig.loginsig",
+                 "passes":{"jobs-web":"AZBP2.jobs.idsig.loginsig"},"pass_errors":{"other-web":"handoff_refused"}})}
+      else
+        {200, %({"user_id":"u-1","email":"tom@example.com","redirect_path":"/midway","pass":"AZBP2.fields.idsig.loginsig"})}
+      end
     when "/v1/site/login"   then {200, %({"changed":true})}
     when "/v1/stats"
       login_stats == 200 ? {200, stats.call(%("login_emails_sent":3,"login_emails_failed":1,"login_links_rejected":0))} : {login_stats, %({"error":"stats_unavailable"})}
@@ -470,6 +477,62 @@ describe "AzookaBay::Client with a login service" do
       ex.code.should eq "branch_mismatch"
       ex = expect_raises(AzookaBay::Client::Error) { client.login_verify_code("tom@example.com", "123456") }
       ex.code.should eq "branch_mismatch"
+    end
+  end
+
+  it "hands a login on: a pass for each other site asked for, and why none for the rest" do
+    with_login_service(handed: true) do |client, service, _|
+      login = client.login_verify("tok", passes_for: ["jobs-web", "other-web"])
+      login.user_id.should eq "u-1"
+      JSON.parse(service.last_body.not_nil!)["passes_for"].should eq JSON.parse(%(["jobs-web","other-web"]))
+      login.passes.should eq({"jobs-web" => "AZBP2.jobs.idsig.loginsig"})
+      login.pass_errors.should eq({"other-web" => "handoff_refused"})
+      client.login_verify_code("tom@example.com", "123456", passes_for: ["jobs-web"]).passes.size.should eq 1
+      JSON.parse(service.last_body.not_nil!)["passes_for"].should eq JSON.parse(%(["jobs-web"]))
+    end
+    # asked for none: none sent, and none back
+    with_login_service do |client, service, _|
+      client.login_verify("tok").passes.should be_empty
+      JSON.parse(service.last_body.not_nil!)["passes_for"]?.should be_nil
+    end
+  end
+
+  it "makes no passes for other sites without a login service" do
+    with_bay do |client, bay|
+      expect_raises(AzookaBay::Client::ConfigError, /passes_for needs a login service/) do
+        client.login_verify("tok", passes_for: ["jobs-web"])
+      end
+      bay.last_path.should be_nil
+    end
+  end
+
+  it "enters a pass handed on from another site, once, checking the branch names its person" do
+    handed = ->(site : String, user : String) {
+      fields = ["id-1", "civic-login-1", "login", user, "tom@example.com", site, "games", "1", "2", "pid"].join('\n')
+      "AZBP2.#{Base64.urlsafe_encode(fields, false)}.idsig.loginsig"
+    }
+    with_login_service do |client, _, branch|
+      login = client.enter(handed.call("pirate-ship", "u-1"))
+      {login.user_id, login.email}.should eq({"u-1", "tom@example.com"})
+      branch.last_path.should eq "/v1/members/enter"
+      branch.verified.should be_true
+    end
+    # one for another site, or no pass at all: refused here, the branch never asked
+    with_login_service do |client, _, branch|
+      {handed.call("jobs-web", "u-1"), "AZBP2.fields.idsig.loginsig", "nonsense", "AZBP2.!!.a.b"}.each do |pass|
+        ex = expect_raises(AzookaBay::Client::Error) { client.enter(pass) }
+        ex.code.should eq "invalid_pass"
+      end
+      branch.last_path.should be_nil
+    end
+    with_login_service(entered_as: "u-2") do |client, _, _|
+      ex = expect_raises(AzookaBay::Client::Error) { client.enter(handed.call("pirate-ship", "u-1")) }
+      ex.code.should eq "branch_mismatch"
+    end
+    # never retried: a pass handed on enters once
+    with_login_service(enter_delay: 600.milliseconds) do |client, _, branch|
+      expect_raises(AzookaBay::Client::TransportError) { client.enter(handed.call("pirate-ship", "u-1")) }
+      branch.nonces.size.should eq 1
     end
   end
 
