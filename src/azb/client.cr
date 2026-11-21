@@ -400,7 +400,9 @@ module AzookaBay
     # each (docs/api.md, "A login handed on"). Each site's pass comes back
     # in `passes`, for this site to carry to it; a site that doesn't take
     # this site's logins is in `pass_errors` (handoff_refused), and the
-    # login itself goes ahead. At most 16. Without a login service it raises
+    # login itself goes ahead. At most 16; an empty list asks for none. A
+    # site the service said nothing of (one older than v0.17.0) is in
+    # `pass_errors` as "unanswered". Without a login service it raises
     # ConfigError: a branch's own login makes no passes.
     def login_verify(token : String, passes_for : Array(String)? = nil) : Login
       verify({"token" => token}, passes_for)
@@ -472,6 +474,7 @@ module AzookaBay
     # (branch_mismatch), so a branch, honest or not, can never hand the
     # site another person's account.
     private def verify(fields : Hash(String, String), passes_for : Array(String)?) : Login
+      passes_for = nil if passes_for.try(&.empty?)
       service = @login
       unless service
         if passes_for
@@ -498,7 +501,9 @@ module AzookaBay
       unless entered["user_id"]?.try(&.as_s?) == user_id
         raise Error.new(502, "branch_mismatch", "the branch answered a pass for #{user_id} with another user; refused")
       end
-      Login.new(user_id, email, r["redirect_path"]?.try(&.as_s?), strings(r["passes"]?), strings(r["pass_errors"]?))
+      passes, pass_errors = strings(r["passes"]?), strings(r["pass_errors"]?)
+      passes_for.try &.each { |site| pass_errors[site] = "unanswered" unless passes[site]? || pass_errors[site]? }
+      Login.new(user_id, email, r["redirect_path"]?.try(&.as_s?), passes, pass_errors)
     end
 
     private def strings(any : JSON::Any?) : Hash(String, String)

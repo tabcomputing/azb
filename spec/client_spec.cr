@@ -489,10 +489,15 @@ describe "AzookaBay::Client with a login service" do
       login.pass_errors.should eq({"other-web" => "handoff_refused"})
       client.login_verify_code("tom@example.com", "123456", passes_for: ["jobs-web"]).passes.size.should eq 1
       JSON.parse(service.last_body.not_nil!)["passes_for"].should eq JSON.parse(%(["jobs-web"]))
+      # a site the service said nothing of is said to be unanswered
+      client.login_verify("tok", passes_for: ["jobs-web", "other-web", "third-web"]).pass_errors
+        .should eq({"other-web" => "handoff_refused", "third-web" => "unanswered"})
     end
-    # asked for none: none sent, and none back
+    # asked for none, or an empty list: none sent, and none back
     with_login_service do |client, service, _|
       client.login_verify("tok").passes.should be_empty
+      JSON.parse(service.last_body.not_nil!)["passes_for"]?.should be_nil
+      client.login_verify("tok", passes_for: [] of String).pass_errors.should be_empty
       JSON.parse(service.last_body.not_nil!)["passes_for"]?.should be_nil
     end
   end
@@ -503,6 +508,8 @@ describe "AzookaBay::Client with a login service" do
         client.login_verify("tok", passes_for: ["jobs-web"])
       end
       bay.last_path.should be_nil
+      client.login_verify("tok", passes_for: [] of String) # none asked: the branch's own login
+      bay.last_path.should eq "/v1/login/verify"
     end
   end
 
