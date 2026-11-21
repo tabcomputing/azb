@@ -58,7 +58,7 @@ on (both since v0.12.0).
 → `200 {"site":"site-9hb4tq1zc6","key":"site-9hb4tq1zc6-20260726-b0c3",
         "realm":"realm-3kq8m2xw7p","capabilities":{"asset-5tn2wq8rk4":["issue","spend"]},
         "issue_limits":{"asset-5tn2wq8rk4":{"account_30d":20,"site_24h":1000}},
-        "version":"0.14.0","branch":"branch-7cz3pw9e1n","own_login":false}`
+        "version":"0.17.0","branch":"branch-7cz3pw9e1n","own_login":false}`
 
 Permissions are `issue`, `spend`, `exchange` and `sell`. `issue_limits`
 (since v0.13.0) lists the assets the site's issues are limited on,
@@ -174,7 +174,8 @@ as the fallback below.
   where the mail client allows it (Apple Mail, iOS). A real copy button is
   impossible because mail clients strip script. The subject and body can
   be the site's own (in character), and Azooka Bay always adds its safety
-  lines ("type your … only where you asked for it", "didn't ask for this?").
+  lines ("type your … only where you asked for it", "didn't ask for this?")
+  and, below them, a line of fine print with the time sent (server v0.14.1+).
 - With method `both`, redeeming the link kills the code and vice versa.
   If you also raise `login_max_redemptions` for mail scanners, redeem
   links on a user gesture or in JavaScript, or a scanner's prefetch will
@@ -339,6 +340,25 @@ Signed with the site's key at its login service:
   | `branch_unavailable` | 503 | the site's branch is suspended at identity |
   | `identity_unavailable` | 503 | identity didn't answer; the link or code is still good, try again |
   | `pass_refused` | 502 | identity answered with a pass for something else; the service signed nothing (an operator's matter); the link or code is still good |
+  | `bad_passes_for` | 400 | `passes_for` (below) names more than 16 sites, a site twice, this site, or something that isn't a site id; checked before the link or code is spent |
+
+  **A login handed on** (since v0.17.0; IDENTITY.md, "A login handed
+  on"): with `"passes_for": ["<site id>", …]`, up to 16 other sites of the
+  realm, the answer also carries a pass for each of them that takes this
+  site's logins, and why not for each that doesn't (an empty list asks
+  for none):
+
+  → `200 {…, "pass":"AZBP2.…","passes":{"<site id>":"AZBP2.…"},"pass_errors":{"<site id>":"handoff_refused"}}`
+
+  The login itself goes ahead whatever happens to the passes. A reason in
+  `pass_errors` is `handoff_refused` (that site doesn't take this one's
+  logins), `user_inactive`, `branch_unavailable`, `identity_unavailable`
+  (identity was down or slow: try again with a new login) or
+  `pass_refused`. The answer comes within about seven seconds of the
+  request, whatever identity does, so a client that waits ten (azb's
+  default) never loses the login to the passes. Hand each pass to its
+  site's server without putting it in a URL. azb: `login_verify(token,
+  passes_for: [...])`, then `Login#passes`.
 
 - `GET /v1/whoami` → `{"site", "key", "service":"login", "version",
   "identity": {"branch", "key", "version"}}`: `identity` is what identity
@@ -359,7 +379,7 @@ the login:
 {"pass": "AZBP2.…"}
 ```
 
-→ `200 {"user_id":"<uuid>","email":"tom@example.com","replay":false}`
+→ `200 {"user_id":"<uuid>","email":"tom@example.com","replay":false,"from_site":null}`
 
 The branch checks the pass (signed by identity and by this site's login
 service, whose key the branch's operator enrolled; for this branch and
@@ -374,16 +394,28 @@ identity's `user_id` and email. The same pass from the same site gets the same
 answer again (`"replay": true`), so a timed-out call is safe to retry:
 azb retries once.
 
+**A pass handed on** from another site's login (`passes_for`, above) is
+entered the same way, by the site it names. The branch takes it only if
+its operator has said this site takes that site's logins (the realm
+file's `logins_from`) and that site is active here, and `from_site`
+names the site whose login it was. It enters **once**: brought again, it
+is `invalid_pass`, so azb's `enter` never retries it. A pass names a
+person, not a browser, so the site takes one only from its own page:
+check the request's origin and a CSRF token of the site's own, as for
+any login form, or someone could sign a victim in as themselves.
+
 | Error | Status | Meaning |
 |---|---|---|
-| `invalid_pass` | 403 | not signed by identity and by this site's login service, for another branch or site, expired, or already used by another — log in again |
+| `invalid_pass` | 403 | not signed by identity and by this site's login service (or, handed on, by the login service of a site this one takes logins from), for another branch or site, expired, or already used (by another, or, handed on, at all) — log in again |
 | `account_mismatch` | 409 | the branch knows this person's email under another id, or the id under another email: refused, never repointed (an operator's matter) |
 | `user_inactive` | 403 | suspended or closed in this realm, at this branch, or at identity |
 | `identity_off` | 503 | this branch doesn't take passes |
 
 A branch whose people all log in at their sites' login services turns its own login off:
 its `login/start`, `login/verify` and `site/login` then answer
-`410 {"error":"login_at_login_service"}`.
+`410 {"error":"login_at_login_service"}`. A branch's own login makes no
+passes: `passes_for` there is `400 {"error":"passes_unavailable"}`,
+before the link or code is spent.
 
 ### Sessions, and hearing of a closure
 
@@ -711,7 +743,8 @@ in `users_transacting` for the first 30 days after upgrading.
 A realm sells through Azooka Bay when its realm file has a `stripe:` block
 and `skus:` (operations.md). A SKU is a bundle of one of the realm's
 assets at a price. A site holding `sell` on an asset may open Stripe
-Checkout sessions for the realm's SKUs of it. Azooka Bay opens the
+Checkout sessions for the realm's SKUs of it, except a SKU whose
+`sold_by` lists other sites only (since v0.16.0). Azooka Bay opens the
 session with the realm's own Stripe key, and **only Stripe's word makes a
 purchase**: its signed webhook, or Azooka Bay reading the session back
 itself. The site never issues purchased coins and never touches a Stripe
@@ -723,7 +756,8 @@ The flow:
    `ui: "embedded"`, the page mounts Stripe's embedded Checkout with the
    returned `publishable_key` and `client_secret`; for `ui: "hosted"`, it
    sends the buyer to the returned `url`.
-3. Stripe sends the buyer back to the realm's `return_url`, with the
+3. Stripe sends the buyer back to the site's `return_url` (its own look's,
+   or else the realm's), with the
    session id where the URL says `{CHECKOUT_SESSION_ID}`. The return page
    asks `GET /v1/checkout?session_id=…` **once**, and checks the `user_id`
    is the signed-in buyer's. One ask has the answer: Stripe sends the
@@ -735,7 +769,9 @@ The flow:
 ### GET /v1/skus
 
 The realm's active SKUs of assets the calling site may sell, cheapest
-first, and the publishable key the page mounts Stripe's form with. A
+first, and the publishable key the page mounts Stripe's form with. A SKU
+whose realm file lists the sites that sell it (`sold_by`, since v0.16.0)
+is listed only to those. A
 display read: not audited per hit.
 
 → `200 {"realm":"realm-3kq8m2xw7p","publishable_key":"pk_live_…",
@@ -755,10 +791,14 @@ price change doesn't touch an open checkout. Stripe's page takes a payment
 for an hour; the buyer types their email there (Azooka Bay doesn't tell
 sites members' addresses, and Stripe's page would). If the realm file sets
 `terms`, the buyer must tick a box beside those words before paying. A
-buyer has at most 5 checkouts live in a realm at once.
+site with a checkout look of its own (the realm file's `stripe: sites:`,
+since v0.16.0) has its checkouts show that, all of it, in place of the
+realm's: its name, logo, statement suffix, return and cancel pages, and
+terms, or none where it sets none. A buyer has at most 5 checkouts live
+in a realm at once.
 
 `redirect` (embedded only): `"always"` (the default) or `"if_required"`.
-Stripe's embedded form sends the buyer on to the realm's `return_url` once
+Stripe's embedded form sends the buyer on to the site's `return_url` once
 they've paid. With `"if_required"` it does so only after a payment method
 that leaves the page (a bank's own site); otherwise the page carries on,
 and Stripe.js calls its `onComplete`, where the page asks
@@ -782,7 +822,7 @@ the buyer is suspended, it's refused.
 |---|---|
 | `bad_user_id` / `bad_idempotency_key` / `bad_ui` | 400 |
 | `bad_redirect`: not `always` or `if_required`, or `if_required` on a hosted checkout | 400 |
-| `capability_denied`: no `sell` on the SKU's asset | 403 |
+| `capability_denied`: no `sell` on the SKU's asset, or the SKU's `sold_by` doesn't list the site (checked on a retry too) | 403 |
 | `user_inactive` | 403 |
 | `unknown_sku` (not the realm's, or retired) / `unknown_user` / `not_selling` | 404 |
 | `checkout_closed` | 409 |
