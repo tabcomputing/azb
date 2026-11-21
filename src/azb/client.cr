@@ -400,7 +400,7 @@ module AzookaBay
     # each (docs/api.md, "A login handed on"). Each site's pass comes back
     # in `passes`, for this site to carry to it; a site that doesn't take
     # this site's logins is in `pass_errors` (handoff_refused), and the
-    # login itself goes ahead. At most 4. Without a login service it raises
+    # login itself goes ahead. At most 16. Without a login service it raises
     # ConfigError: a branch's own login makes no passes.
     def login_verify(token : String, passes_for : Array(String)? = nil) : Login
       verify({"token" => token}, passes_for)
