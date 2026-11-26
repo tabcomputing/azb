@@ -135,8 +135,8 @@ module AzookaBay
     #
     # `base_url` is the site's branch, and there is no default (since 0.11):
     # with more than one branch, a default would quietly pick one of them.
-    # It must be http(s)://host[:port]; anything else raises ConfigError here
-    # rather than failing later as a connection error.
+    # It must be https://host[:port], or http:// to this machine; anything
+    # else raises ConfigError here rather than failing later.
     def initialize(@site_id : String, @key_id : String, seed : String | Bytes,
                    base_url : String,
                    @connect_timeout : Time::Span = 5.seconds,
@@ -194,17 +194,24 @@ module AzookaBay
       self
     end
 
-    # url, checked as new wants it: http(s)://host[:port], nothing else. A
-    # path, query or fragment would be dropped without a word (a call goes to
-    # the host and port, at its own path), so they're refused.
+    # The hosts that are this machine: the only ones plain http may reach.
+    LOOPBACK = {"127.0.0.1", "localhost", "[::1]", "::1"}
+
+    # url, checked as new wants it: https://host[:port], or http:// to this
+    # machine (a branch beside the site, on loopback), nothing else. Since
+    # 0.11, as for a login service: a branch's answers are balances, holds
+    # and who a pass is, and a site trusts them. A path, query or fragment
+    # would be dropped without a word (a call goes to the host and port, at
+    # its own path), so they're refused.
     def self.branch_url(url : String) : String
       url = url.strip
       uri = URI.parse(url) rescue nil
       host = uri.try(&.host)
-      ok = uri && host && !host.empty? && {"https", "http"}.includes?(uri.scheme) &&
+      ok = uri && host && !host.empty? &&
+           (uri.scheme == "https" || (uri.scheme == "http" && LOOPBACK.includes?(host))) &&
            uri.path.in?("", "/") && uri.query.nil? && uri.fragment.nil?
-      raise ConfigError.new("an Azooka Bay address must be http(s)://host[:port] (AZB_BASE_URL, AZB_LOGIN_URL): " \
-                            "got #{url.inspect}") unless ok
+      raise ConfigError.new("an Azooka Bay address must be https://host[:port], or http:// to this machine " \
+                            "(AZB_BASE_URL, AZB_LOGIN_URL): got #{url.inspect}") unless ok
       url
     end
 
@@ -215,7 +222,7 @@ module AzookaBay
       host = uri.host
       ok = host && !host.empty? &&
            (uri.scheme == "https" ||
-            (uri.scheme == "http" && {"127.0.0.1", "localhost", "[::1]", "::1"}.includes?(host)))
+            (uri.scheme == "http" && LOOPBACK.includes?(host)))
       raise ConfigError.new("AZB_LOGIN_URL must be https://host[:port] (or http:// to 127.0.0.1): it carries people's logins") unless ok
       url
     end

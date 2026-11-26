@@ -593,7 +593,7 @@ describe "AzookaBay::Client with a login service" do
     end
   end
 
-  it "has no default branch: AZB_BASE_URL is required, and must be http(s)://host[:port]" do
+  it "has no default branch: AZB_BASE_URL is required, https or http:// to this machine" do
     vars = {"AZB_SITE_ID" => "pirate-ship", "AZB_KEY_ID" => "ps-1", "AZB_PRIVATE_KEY_SEED" => SEED}
     begin
       vars.each { |k, v| ENV[k] = v }
@@ -608,12 +608,14 @@ describe "AzookaBay::Client with a login service" do
     end
     # a path, query or fragment would be dropped without a word, so they're refused
     {"", "  ", "branch.example.test", "127.0.0.1:17304", "ftp://branch.example.test", "https://",
+     "http://branch.example.test", "http://10.0.0.5:17304",
      "https://branch.example.test/azb", "https://branch.example.test/?x=1", "https://branch.example.test#v1"}.each do |url|
-      expect_raises(AzookaBay::Client::ConfigError, /must be http\(s\):\/\/host\[:port\]/) do
+      expect_raises(AzookaBay::Client::ConfigError, /must be https:\/\/host\[:port\], or http:\/\/ to this machine/) do
         AzookaBay::Client.new("s", "k", SEED, url)
       end
     end
-    {"http://127.0.0.1:17304", "https://branch.example.test", "https://branch.example.test:8443/", " http://localhost:17304 "}.each do |url|
+    {"http://127.0.0.1:17304", "http://[::1]:17304", "https://branch.example.test", "https://branch.example.test:8443/",
+     " http://localhost:17304 "}.each do |url|
       AzookaBay::Client.new("s", "k", SEED, url).should be_a(AzookaBay::Client)
     end
   end
