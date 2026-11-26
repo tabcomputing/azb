@@ -232,11 +232,14 @@ module AzookaBay
       !@login.nil?
     end
 
-    # True when all three credentials are present. Lets a service report its own
-    # readiness (a /health that says what is wired, not merely that it is up)
-    # instead of discovering a missing credential at a visitor's first login.
+    # True when the four settings from_env requires are present: the three
+    # credentials and the branch's address (required since 0.11). Lets a
+    # service report its own readiness (a /health that says what is wired,
+    # not merely that it is up) instead of discovering a missing setting at
+    # a visitor's first login. It doesn't check them: from_env does.
     def self.configured? : Bool
-      !!(ENV["AZB_SITE_ID"]? && ENV["AZB_KEY_ID"]? && ENV["AZB_PRIVATE_KEY_SEED"]?)
+      !!(ENV["AZB_SITE_ID"]?.presence && ENV["AZB_KEY_ID"]?.presence &&
+         ENV["AZB_PRIVATE_KEY_SEED"]?.presence && ENV["AZB_BASE_URL"]?.presence)
     end
 
     # The public half of this site's signing key, hex — useful for confirming a

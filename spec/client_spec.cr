@@ -598,10 +598,12 @@ describe "AzookaBay::Client with a login service" do
     begin
       vars.each { |k, v| ENV[k] = v }
       ENV.delete("AZB_BASE_URL")
+      AzookaBay::Client.configured?.should be_false
       expect_raises(AzookaBay::Client::ConfigError, /AZB_BASE_URL not set/) { AzookaBay::Client.from_env }
       ENV["AZB_BASE_URL"] = ""
       expect_raises(AzookaBay::Client::ConfigError, /AZB_BASE_URL not set/) { AzookaBay::Client.from_env }
       ENV["AZB_BASE_URL"] = "https://branch.example.test/"
+      AzookaBay::Client.configured?.should be_true
       AzookaBay::Client.from_env.should be_a(AzookaBay::Client)
     ensure
       (vars.keys + ["AZB_BASE_URL"]).each { |k| ENV.delete(k) }
