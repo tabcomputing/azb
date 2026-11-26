@@ -54,6 +54,7 @@ private class FakeBay
 end
 
 private SEED = "1".rjust(64, '0')
+private BRANCH = "http://127.0.0.1:17304"
 
 private def with_bay(&block : AzookaBay::Client, FakeBay -> Nil)
   key = AzookaBay::Ed25519::SigningKey.new(SEED.hexbytes)
@@ -130,16 +131,16 @@ describe AzookaBay::Client do
   it "accepts a seed as hex, base64, or raw bytes" do
     raw = SEED.hexbytes
     expected = AzookaBay::Ed25519::SigningKey.new(raw).public_key.hexstring
-    AzookaBay::Client.new("s", "k", SEED).public_key_hex.should eq expected
-    AzookaBay::Client.new("s", "k", Base64.strict_encode(raw)).public_key_hex.should eq expected
-    AzookaBay::Client.new("s", "k", raw).public_key_hex.should eq expected
+    AzookaBay::Client.new("s", "k", SEED, BRANCH).public_key_hex.should eq expected
+    AzookaBay::Client.new("s", "k", Base64.strict_encode(raw), BRANCH).public_key_hex.should eq expected
+    AzookaBay::Client.new("s", "k", raw, BRANCH).public_key_hex.should eq expected
   end
 
   it "rejects a seed it cannot decode rather than signing with nonsense" do
-    expect_raises(AzookaBay::Client::ConfigError) { AzookaBay::Client.new("s", "k", "not-a-key") }
+    expect_raises(AzookaBay::Client::ConfigError) { AzookaBay::Client.new("s", "k", "not-a-key", BRANCH) }
     # valid base64, wrong length: must be the SAME helpful error, not a crypto error
     expect_raises(AzookaBay::Client::ConfigError) do
-      AzookaBay::Client.new("s", "k", Base64.strict_encode(Bytes.new(16)))
+      AzookaBay::Client.new("s", "k", Base64.strict_encode(Bytes.new(16)), BRANCH)
     end
   end
 
@@ -562,7 +563,7 @@ describe "AzookaBay::Client with a login service" do
   end
 
   it "reads the login service's settings with the site's, all three or none, and refuses v0.12's identity ones" do
-    vars = {"AZB_SITE_ID" => "pirate-ship", "AZB_KEY_ID" => "ps-1", "AZB_PRIVATE_KEY_SEED" => SEED}
+    vars = {"AZB_SITE_ID" => "pirate-ship", "AZB_KEY_ID" => "ps-1", "AZB_PRIVATE_KEY_SEED" => SEED, "AZB_BASE_URL" => BRANCH}
     login = {"AZB_LOGIN_KEY_ID" => "ps-login-1", "AZB_LOGIN_KEY_SEED" => LOGIN_SEED, "AZB_LOGIN_URL" => "https://login.example.test"}
     begin
       vars.each { |k, v| ENV[k] = v }
@@ -575,7 +576,7 @@ describe "AzookaBay::Client with a login service" do
       ENV["AZB_LOGIN_URL"] = "https://login.example.test"
       AzookaBay::Client.from_env.login?.should be_true
       # in the clear only to this machine: a service beside the site
-      bare = AzookaBay::Client.new("pirate-ship", "ps-1", SEED)
+      bare = AzookaBay::Client.new("pirate-ship", "ps-1", SEED, BRANCH)
       {"http://10.0.0.5:17306", "http://login.example.test", "ftp://login.example.test", "login.example.test"}.each do |url|
         expect_raises(AzookaBay::Client::ConfigError, /AZB_LOGIN_URL must be https/) { bare.with_login("ps-login-1", LOGIN_SEED, url) }
       end
@@ -585,10 +586,35 @@ describe "AzookaBay::Client with a login service" do
       ENV["AZB_IDENTITY_KEY_ID"] = "ps-id-1"
       expect_raises(AzookaBay::Client::ConfigError, /AZB_IDENTITY_KEY_ID is gone since azb 0.8/) { AzookaBay::Client.from_env }
       expect_raises(AzookaBay::Client::ConfigError, /no login service/) do
-        AzookaBay::Client.new("s", "k", SEED).login_whoami
+        AzookaBay::Client.new("s", "k", SEED, BRANCH).login_whoami
       end
     ensure
       (vars.keys + login.keys + ["AZB_IDENTITY_KEY_ID"]).each { |k| ENV.delete(k) }
+    end
+  end
+
+  it "has no default branch: AZB_BASE_URL is required, and must be http(s)://host[:port]" do
+    vars = {"AZB_SITE_ID" => "pirate-ship", "AZB_KEY_ID" => "ps-1", "AZB_PRIVATE_KEY_SEED" => SEED}
+    begin
+      vars.each { |k, v| ENV[k] = v }
+      ENV.delete("AZB_BASE_URL")
+      expect_raises(AzookaBay::Client::ConfigError, /AZB_BASE_URL not set/) { AzookaBay::Client.from_env }
+      ENV["AZB_BASE_URL"] = ""
+      expect_raises(AzookaBay::Client::ConfigError, /AZB_BASE_URL not set/) { AzookaBay::Client.from_env }
+      ENV["AZB_BASE_URL"] = "https://branch.example.test/"
+      AzookaBay::Client.from_env.should be_a(AzookaBay::Client)
+    ensure
+      (vars.keys + ["AZB_BASE_URL"]).each { |k| ENV.delete(k) }
+    end
+    # a path, query or fragment would be dropped without a word, so they're refused
+    {"", "  ", "branch.example.test", "127.0.0.1:17304", "ftp://branch.example.test", "https://",
+     "https://branch.example.test/azb", "https://branch.example.test/?x=1", "https://branch.example.test#v1"}.each do |url|
+      expect_raises(AzookaBay::Client::ConfigError, /must be http\(s\):\/\/host\[:port\]/) do
+        AzookaBay::Client.new("s", "k", SEED, url)
+      end
+    end
+    {"http://127.0.0.1:17304", "https://branch.example.test", "https://branch.example.test:8443/", " http://localhost:17304 "}.each do |url|
+      AzookaBay::Client.new("s", "k", SEED, url).should be_a(AzookaBay::Client)
     end
   end
 end

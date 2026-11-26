@@ -59,7 +59,9 @@ reimplement signed transport (and rediscover that the query string is part of th
 signed path, or that nonces must never repeat).
 
 ```crystal
-azb = AzookaBay::Client.from_env          # AZB_SITE_ID / AZB_KEY_ID / AZB_PRIVATE_KEY_SEED
+azb = AzookaBay::Client.from_env          # AZB_SITE_ID / AZB_KEY_ID / AZB_PRIVATE_KEY_SEED / AZB_BASE_URL
+                                           #   (the site's branch, e.g. http://127.0.0.1:17304 beside it;
+                                           #   required since 0.11: there is no default branch)
 azb.whoami                                 # proves creds, clock and signing end to end
 azb.login_start("tom@example.com", redirect_path: "/midway")
 login = azb.login_verify(token)            # from the magic link; first verify creates the user

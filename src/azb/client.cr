@@ -54,8 +54,6 @@ module AzookaBay
   # to the login service and everything else to the site's branch, as
   # before; the calls and what they return are the same.
   class Client
-    DEFAULT_BASE_URL = "https://api.azookabay.com"
-
     # An API error, post-authentication or otherwise.
     #
     # `code` is the server's own error string. Authentication failures are a
@@ -134,18 +132,25 @@ module AzookaBay
     # spend), where a hung connection must fail fast rather than hang a
     # visitor's request. Tune per site if needed. One call is ONE request
     # (see OneShotHTTPClient), so read_timeout bounds the whole call.
+    #
+    # `base_url` is the site's branch, and there is no default (since 0.11):
+    # with more than one branch, a default would quietly pick one of them.
+    # It must be http(s)://host[:port]; anything else raises ConfigError here
+    # rather than failing later as a connection error.
     def initialize(@site_id : String, @key_id : String, seed : String | Bytes,
-                   base_url : String = DEFAULT_BASE_URL,
+                   base_url : String,
                    @connect_timeout : Time::Span = 5.seconds,
                    @read_timeout : Time::Span = 10.seconds)
       # A trailing slash would make the SENT resource "//v1/..." while
       # "/v1/..." was signed — an undebuggable opaque 401. Normalize it away.
-      @base_url = base_url.chomp("/")
+      @base_url = Client.branch_url(base_url).chomp("/")
       @key = Ed25519::SigningKey.new(seed.is_a?(Bytes) ? seed : decode_seed(seed))
     end
 
-    # Reads AZB_SITE_ID, AZB_KEY_ID, AZB_PRIVATE_KEY_SEED and optional
-    # AZB_BASE_URL — the names the enrollment tooling emits. With
+    # Reads AZB_SITE_ID, AZB_KEY_ID, AZB_PRIVATE_KEY_SEED and AZB_BASE_URL,
+    # all four required — the names the enrollment tooling emits. AZB_BASE_URL
+    # is the site's branch; unset, this raises (since 0.11: there is no
+    # default, so a site can't quietly call a branch that isn't its own). With
     # AZB_LOGIN_KEY_ID, AZB_LOGIN_KEY_SEED and AZB_LOGIN_URL (all three),
     # logins go to the site's login service (`with_login`).
     def self.from_env : Client
@@ -158,7 +163,10 @@ module AzookaBay
         raise ConfigError.new("#{old} is gone since azb 0.8: a site logs its people in at its own login " \
                               "service (AZB_LOGIN_KEY_ID, AZB_LOGIN_KEY_SEED, AZB_LOGIN_URL)")
       end
-      client = new(site, key, seed, ENV["AZB_BASE_URL"]? || DEFAULT_BASE_URL)
+      base = ENV["AZB_BASE_URL"]?.presence ||
+             raise ConfigError.new("AZB_BASE_URL not set: the address of this site's branch " \
+                                   "(http://127.0.0.1:17304 when it runs beside the site); there is no default")
+      client = new(site, key, seed, base)
       login = {ENV["AZB_LOGIN_KEY_ID"]?.presence, ENV["AZB_LOGIN_KEY_SEED"]?.presence, ENV["AZB_LOGIN_URL"]?.presence}
       if login.any?
         login_key, login_seed, login_url = login
@@ -184,6 +192,20 @@ module AzookaBay
     def with_login(key_id : String, seed : String | Bytes, url : String) : self
       @login = Client.new(@site_id, key_id, seed, Client.login_url(url), @connect_timeout, @read_timeout)
       self
+    end
+
+    # url, checked as new wants it: http(s)://host[:port], nothing else. A
+    # path, query or fragment would be dropped without a word (a call goes to
+    # the host and port, at its own path), so they're refused.
+    def self.branch_url(url : String) : String
+      url = url.strip
+      uri = URI.parse(url) rescue nil
+      host = uri.try(&.host)
+      ok = uri && host && !host.empty? && {"https", "http"}.includes?(uri.scheme) &&
+           uri.path.in?("", "/") && uri.query.nil? && uri.fragment.nil?
+      raise ConfigError.new("an Azooka Bay address must be http(s)://host[:port] (AZB_BASE_URL, AZB_LOGIN_URL): " \
+                            "got #{url.inspect}") unless ok
+      url
     end
 
     # url, checked as with_login wants it.
